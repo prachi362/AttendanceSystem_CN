@@ -1,67 +1,74 @@
 import { useEffect, useState } from 'react'
-import { Camera, UserPlus, Users, Clock as ClockIcon, LayoutDashboard } from 'lucide-react'
+import { Camera, UserPlus, LayoutDashboard, Users, Clock as ClockIcon } from 'lucide-react'
 import LangToggle from '../components/LangToggle.jsx'
-import Clock from '../components/Clock.jsx'
 import { api } from '../utils/api.js'
 
 export default function HomeScreen({ t, lang, setLang, onPunch, onRegister, onDashboard }) {
   const [stats, setStats] = useState({ workers: 0, punches: 0 })
+  const [now, setNow] = useState(new Date())
 
   useEffect(() => {
-    api.stats().then(setStats).catch(() => {})
+    let cancelled = false
+    const load = () => api.stats().then(s => { if (!cancelled) setStats(s) }).catch(() => {})
+    load()
+    const statId = setInterval(load, 10000)
+    const tickId = setInterval(() => setNow(new Date()), 1000)
+    return () => { cancelled = true; clearInterval(statId); clearInterval(tickId) }
   }, [])
 
+  const locale = lang === 'es' ? 'es-ES' : 'en-US'
+  const timeStr = now.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit', hour12: true })
+  const dateStr = now.toLocaleDateString(locale, { weekday: 'long', month: 'long', day: 'numeric' })
+
   return (
-    <div className="flex-1 flex flex-col p-7 gap-6 fade-in">
-      <div className="flex justify-end items-center">
+    <div className="flex-1 flex flex-col px-16 sm:px-20 py-5 gap-5 fade-in">
+      <div className="flex justify-end">
         <LangToggle lang={lang} setLang={setLang} />
       </div>
 
-      <div className="card p-5">
-        <div className="text-slate-500 text-sm font-medium uppercase tracking-wider">{t.welcome}</div>
-        <div className="mt-1 text-slate-900">
-          <Clock lang={lang} />
-        </div>
+      {/* WELCOME + clock card */}
+      <div className="card px-5 py-4">
+        <div className="text-[10px] uppercase tracking-[0.25em] text-slate-500">{t.welcome}</div>
+        <div className="text-5xl text-slate-900 tabular-nums mt-1" style={{ fontWeight: 600 }}>{timeStr}</div>
+        <div className="text-sm text-slate-500 mt-1 capitalize">{dateStr}</div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 flex-1 content-start">
-        <button onClick={onPunch} className="btn-big btn-primary flex items-center justify-center gap-4">
-          <div className="bg-white/20 rounded-2xl p-3">
-            <Camera size={36} strokeWidth={2.4} />
-          </div>
+      {/* 3 stacked gradient buttons — sit right below the welcome card */}
+      <div className="flex flex-col gap-3.5">
+        <button onClick={onPunch} className="btn-big btn-primary flex items-center justify-center gap-3">
+          <Camera size={26} strokeWidth={2} />
           <span>{t.punchIn}</span>
         </button>
-
-        <button onClick={onRegister} className="btn-big btn-success flex items-center justify-center gap-4">
-          <div className="bg-white/20 rounded-2xl p-3">
-            <UserPlus size={36} strokeWidth={2.4} />
-          </div>
+        <button onClick={onRegister} className="btn-big btn-success flex items-center justify-center gap-3">
+          <UserPlus size={26} strokeWidth={2} />
           <span>{t.register}</span>
         </button>
-
-        <button onClick={onDashboard} className="btn-big btn-ghost flex items-center justify-center gap-4">
-          <div className="bg-brand-50 text-brand-600 rounded-2xl p-3">
-            <LayoutDashboard size={32} strokeWidth={2.4} />
-          </div>
-          <span className="text-slate-800">{t.dashboard}</span>
+        <button onClick={onDashboard} className="btn-big btn-ghost flex items-center justify-center gap-3">
+          <LayoutDashboard size={24} strokeWidth={2} />
+          <span>{t.dashboard}</span>
         </button>
       </div>
 
+      <div className="flex-1" />
+
+      {/* Two compact stats */}
       <div className="grid grid-cols-2 gap-3">
-        <Stat icon={<Users size={20} />} label={t.workers} value={stats.workers} />
-        <Stat icon={<ClockIcon size={20} />} label={t.punches} value={stats.punches} />
+        <StatTile icon={Users}     label={t.totalWorkers} value={stats.workers || 0} />
+        <StatTile icon={ClockIcon} label={t.punches}      value={stats.punches || 0} />
       </div>
     </div>
   )
 }
 
-function Stat({ icon, label, value }) {
+function StatTile({ icon: Icon, label, value }) {
   return (
-    <div className="card p-4 flex items-center gap-3">
-      <div className="bg-brand-50 text-brand-600 rounded-xl p-2">{icon}</div>
-      <div>
-        <div className="text-xs uppercase tracking-wider text-slate-500 font-semibold">{label}</div>
-        <div className="text-2xl font-bold text-slate-900 tabular-nums">{value}</div>
+    <div className="card px-4 py-3 flex items-center gap-3">
+      <div className="w-9 h-9 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center">
+        <Icon size={18} strokeWidth={2.2} />
+      </div>
+      <div className="leading-tight">
+        <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
+        <div className="text-2xl text-slate-900 tabular-nums" style={{ fontWeight: 600 }}>{value}</div>
       </div>
     </div>
   )

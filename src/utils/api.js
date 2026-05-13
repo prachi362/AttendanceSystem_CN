@@ -7,15 +7,20 @@ async function j(method, url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
   })
-  if (!res.ok) throw new Error(`${method} ${url} -> ${res.status}`)
-  return res.json()
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `${method} ${url} -> ${res.status}`)
+    err.status = res.status
+    err.body = data
+    throw err
+  }
+  return data
 }
 
 export const api = {
   listWorkers: () => j('GET', '/api/workers'),
-  createWorker: (name, photos, descriptor, descriptors) =>
-    j('POST', '/api/workers', { name, photos, descriptor, descriptors }),
+  createWorker: (payload) => j('POST', '/api/workers', payload),
   listPunches: (limit = 200) => j('GET', `/api/punches?limit=${limit}`),
-  createPunch: (workerId, name, photo) => j('POST', '/api/punches', { workerId, name, photo }),
+  createPunch: (workerId, name, photo, distance) => j('POST', '/api/punches', { workerId, name, photo, distance }),
   stats: () => j('GET', '/api/stats')
 }

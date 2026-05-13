@@ -6,10 +6,12 @@
 // Run: npm run server     (port 5174)
 // Dev: npm run dev:all    (vite + server together)
 
+import 'dotenv/config'
 import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { initOutbox, enqueuePunch, outboxStatus } from './sync/outbox.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -56,16 +58,18 @@ function dateFolder(ts = Date.now()) {
 
 app.get('/api/workers', (_req, res) => {
   const db = readDB()
-  // Include descriptors so the client can do face matching locally
-  res.json(db.workers.map(w => ({
-    id: w.id, name: w.name, createdAt: w.createdAt, folder: w.folder, thumb: w.thumb,
+  res.json(db.workers.filter(w => !w.deactivated).map(w => ({
+    id: w.id, name: w.name, employeeId: w.employeeId || null,
+    createdAt: w.createdAt, folder: w.folder, thumb: w.thumb,
     descriptor: w.descriptor || null,
-    descriptors: w.descriptors || null
+    descriptors: w.descriptors || null,
+    currentState: w.currentState || 'out',
+    lastPunchTs: w.lastPunchTs || null
   })))
 })
 
 app.post('/api/workers', (req, res) => {
-  const { name, photos, descriptor, descriptors } = req.body || {}
+  const { name, employeeId, photos, descriptor, descriptors } = req.body || {}
   if (!name || !photos || !photos.front) {
     return res.status(400).json({ error: 'name and photos.front are required' })
   }
@@ -75,7 +79,7 @@ app.post('/api/workers', (req, res) => {
   fs.mkdirSync(folder, { recursive: true })
 
   const saved = {}
-  for (const pose of ['front', 'up', 'down', 'left', 'right']) {
+  for (const pose of ['front', 'left', 'right']) {
     const buf = dataUrlToBuffer(photos[pose])
     if (!buf) continue
     const filename = `${pose}.jpg`
@@ -86,17 +90,21 @@ app.post('/api/workers', (req, res) => {
   const worker = {
     id,
     name: String(name).trim(),
+    employeeId: employeeId ? String(employeeId).trim() : null,
     createdAt: Date.now(),
     folder: `data/workers/${folderName}`,
     thumb: saved.front || null,
     photos: saved,
     descriptor: Array.isArray(descriptor) ? descriptor : null,
-    descriptors: Array.isArray(descriptors) ? descriptors.filter(d => Array.isArray(d) && d.length) : null
+    descriptors: Array.isArray(descriptors) ? descriptors.filter(d => Array.isArray(d) && d.length) : null,
+    currentState: 'out',
+    lastPunchTs: null,
+    deactivated: false
   }
   const db = readDB()
   db.workers.push(worker)
   writeDB(db)
-  res.json({ ok: true, worker: { id: worker.id, name: worker.name, folder: worker.folder, thumb: worker.thumb } })
+  res.json({ ok: true, worker: { id: worker.id, name: worker.name, employeeId: worker.employeeId, folder: worker.folder, thumb: worker.thumb } })
 })
 
 // --- Punches ---------------------------------------------------------------
@@ -108,29 +116,60 @@ app.get('/api/punches', (req, res) => {
   res.json(list)
 })
 
+// Cooldown so we don't double-record someone within 60s.
+const PUNCH_COOLDOWN_MS = 60 * 1000
+
 app.post('/api/punches', (req, res) => {
-  const { workerId, name, photo } = req.body || {}
+  const { workerId, name, photo, distance } = req.body || {}
   const buf = dataUrlToBuffer(photo)
   if (!buf) return res.status(400).json({ error: 'photo (data URL) required' })
 
   const ts = Date.now()
+  const db = readDB()
+  const worker = db.workers.find(w => w.id === workerId)
+
+  // Debounce: if same worker punched within cooldown, refuse.
+  if (worker && worker.lastPunchTs && (ts - worker.lastPunchTs) < PUNCH_COOLDOWN_MS) {
+    return res.status(429).json({
+      error: 'cooldown',
+      lastPunchTs: worker.lastPunchTs,
+      lastDirection: worker.currentState || 'in',
+      retryAfterMs: PUNCH_COOLDOWN_MS - (ts - worker.lastPunchTs)
+    })
+  }
+
   const dayFolder = path.join(PUNCHES_DIR, dateFolder(ts))
   fs.mkdirSync(dayFolder, { recursive: true })
   const filename = `${ts}_${safe(workerId || 'unknown')}.jpg`
   const rel = `data/punches/${dateFolder(ts)}/${filename}`
   fs.writeFileSync(path.join(dayFolder, filename), buf)
 
+  // Toggle direction off the worker's current state.
+  const prevState = worker?.currentState || 'out'
+  const direction = prevState === 'in' ? 'out' : 'in'
+
   const punch = {
     id: uid(),
     workerId: workerId || null,
+    employeeId: worker?.employeeId || null,
     name: name || 'Unknown',
+    direction,
     ts,
     photo: rel,
+    photoAbs: path.join(dayFolder, filename),  // for the sync worker
+    distance: typeof distance === 'number' ? distance : null,
     sizeBytes: buf.length
   }
-  const db = readDB()
   db.punches.push(punch)
+  if (worker) {
+    worker.currentState = direction
+    worker.lastPunchTs = ts
+  }
   writeDB(db)
+
+  // Best-effort: push to Microsoft Graph in the background. Never blocks the response.
+  try { enqueuePunch(punch) } catch (e) { console.warn('[sync] enqueue failed:', e.message) }
+
   res.json({ ok: true, punch })
 })
 
@@ -142,11 +181,26 @@ app.use('/data', express.static(DATA_DIR))
 
 app.get('/api/stats', (_req, res) => {
   const db = readDB()
-  res.json({ workers: db.workers.length, punches: db.punches.length })
+  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+  const today = db.punches.filter(p => p.ts >= startOfDay.getTime())
+  const workers = db.workers.filter(w => !w.deactivated)
+  const clockedIn = workers.filter(w => w.currentState === 'in').length
+  const last = db.punches[db.punches.length - 1] || null
+  res.json({
+    workers: workers.length,
+    punches: db.punches.length,
+    todayPunches: today.length,
+    clockedIn,
+    lastPunch: last ? { name: last.name, ts: last.ts, direction: last.direction || 'in' } : null
+  })
 })
+
+// --- Sync status (for debugging) ------------------------------------------
+app.get('/api/sync/status', (_req, res) => res.json(outboxStatus()))
 
 const PORT = process.env.PORT || 5174
 app.listen(PORT, () => {
   console.log(`[attendance] api+data on http://localhost:${PORT}`)
   console.log(`[attendance] data dir: ${DATA_DIR}`)
+  initOutbox({ dataDir: DATA_DIR })
 })

@@ -4,3 +4,9 @@ dist
 *.log
 .vite
 data/
+.env
+.env.local
+*service-account*.json
+driversselfcheckin-*.json
+*-key.json
+secrets/

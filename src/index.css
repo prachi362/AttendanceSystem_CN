@@ -85,4 +85,3 @@ body {
 /* Hide scrollbars in lists for kiosk feel */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }
-

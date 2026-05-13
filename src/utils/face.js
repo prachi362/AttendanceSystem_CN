@@ -19,8 +19,8 @@ export function ensureModels() {
   return loadingPromise
 }
 
-// Stricter detector confidence => fewer junk detections, better alignment.
-const detectorOptions = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 })
+// Permissive detector confidence so we catch faces in tougher lighting/angles.
+const detectorOptions = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.45 })
 
 async function descriptorFromInput(input) {
   await ensureModels()
