@@ -3,7 +3,7 @@ import { ArrowLeft, Check, UserPlus, Camera, ScanFace, AlertTriangle } from 'luc
 import CameraView from '../components/CameraView.jsx'
 import { useCountdown, CountdownBadge } from '../components/Countdown.jsx'
 import { captureCompressedJpeg } from '../utils/image.js'
-import { descriptorFromDataUrl, bestMatch } from '../utils/face.js'
+import { bestDescriptor, bestMatch } from '../utils/face.js'
 import { api } from '../utils/api.js'
 
 export default function PunchScreen({ t, onDone, onBack, onRegister }) {
@@ -31,13 +31,14 @@ export default function PunchScreen({ t, onDone, onBack, onRegister }) {
     setStage('identifying')
 
     try {
-      const descriptor = await descriptorFromDataUrl(data)
+      // Prefer descriptor straight from the video frame (lossless), fall back to data URL.
+      const descriptor = await bestDescriptor({ video, dataUrl: data })
       if (!descriptor) {
         setStage('unknown')
         setMatchInfo({ reason: 'noFace' })
         return
       }
-      const match = bestMatch(workers, descriptor, 0.55)
+      const match = bestMatch(workers, descriptor, 0.5)
       if (!match) {
         setStage('unknown')
         setMatchInfo({ reason: 'noMatch' })

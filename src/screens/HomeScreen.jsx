@@ -13,8 +13,7 @@ export default function HomeScreen({ t, lang, setLang, onPunch, onRegister, onDa
 
   return (
     <div className="flex-1 flex flex-col p-7 gap-6 fade-in">
-      <div className="flex justify-between items-center">
-        <img src="/logo.png" alt="Conquer Nation" className="h-12 object-contain" />
+      <div className="flex justify-end items-center">
         <LangToggle lang={lang} setLang={setLang} />
       </div>
 

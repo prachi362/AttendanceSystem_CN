@@ -56,15 +56,16 @@ function dateFolder(ts = Date.now()) {
 
 app.get('/api/workers', (_req, res) => {
   const db = readDB()
-  // Include descriptor so the client can do face matching locally
+  // Include descriptors so the client can do face matching locally
   res.json(db.workers.map(w => ({
     id: w.id, name: w.name, createdAt: w.createdAt, folder: w.folder, thumb: w.thumb,
-    descriptor: w.descriptor || null
+    descriptor: w.descriptor || null,
+    descriptors: w.descriptors || null
   })))
 })
 
 app.post('/api/workers', (req, res) => {
-  const { name, photos, descriptor } = req.body || {}
+  const { name, photos, descriptor, descriptors } = req.body || {}
   if (!name || !photos || !photos.front) {
     return res.status(400).json({ error: 'name and photos.front are required' })
   }
@@ -89,7 +90,8 @@ app.post('/api/workers', (req, res) => {
     folder: `data/workers/${folderName}`,
     thumb: saved.front || null,
     photos: saved,
-    descriptor: Array.isArray(descriptor) ? descriptor : null
+    descriptor: Array.isArray(descriptor) ? descriptor : null,
+    descriptors: Array.isArray(descriptors) ? descriptors.filter(d => Array.isArray(d) && d.length) : null
   }
   const db = readDB()
   db.workers.push(worker)

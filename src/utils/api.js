@@ -13,7 +13,8 @@ async function j(method, url, body) {
 
 export const api = {
   listWorkers: () => j('GET', '/api/workers'),
-  createWorker: (name, photos, descriptor) => j('POST', '/api/workers', { name, photos, descriptor }),
+  createWorker: (name, photos, descriptor, descriptors) =>
+    j('POST', '/api/workers', { name, photos, descriptor, descriptors }),
   listPunches: (limit = 200) => j('GET', `/api/punches?limit=${limit}`),
   createPunch: (workerId, name, photo) => j('POST', '/api/punches', { workerId, name, photo }),
   stats: () => j('GET', '/api/stats')

@@ -3,7 +3,7 @@ import { ArrowLeft, Check, Glasses, ArrowUp, ArrowDown, ArrowLeftCircle, ArrowRi
 import CameraView from '../components/CameraView.jsx'
 import { useCountdown, CountdownBadge } from '../components/Countdown.jsx'
 import { captureCompressedJpeg } from '../utils/image.js'
-import { descriptorFromDataUrl } from '../utils/face.js'
+import { bestDescriptor } from '../utils/face.js'
 import { api } from '../utils/api.js'
 
 const STEPS = ['front', 'up', 'down', 'left', 'right']
@@ -15,6 +15,7 @@ export default function RegisterScreen({ t, onDone, onBack }) {
   const [stage, setStage] = useState('name') // name | glasses | capture | saving | done
   const [stepIdx, setStepIdx] = useState(0)
   const [photos, setPhotos] = useState({})
+  const descriptorsRef = useRef([])
   const [err, setErr] = useState('')
   const [camReady, setCamReady] = useState(false)
   const [flash, setFlash] = useState(false)
@@ -40,15 +41,21 @@ export default function RegisterScreen({ t, onDone, onBack }) {
     setTimeout(() => setFlash(false), 320)
     const next = { ...photos, [stepKey]: data }
     setPhotos(next)
+
+    // Best-quality descriptor: straight from the video element if possible.
+    try {
+      const d = await bestDescriptor({ video, dataUrl: data })
+      if (d) descriptorsRef.current.push(d)
+    } catch (e) { console.warn('[face] descriptor failed', e) }
+
     if (stepIdx + 1 < STEPS.length) {
       setTimeout(() => setStepIdx(stepIdx + 1), 350)
     } else {
       setStage('saving')
       try {
-        // Compute face descriptor from the front-facing photo for matching later.
-        let descriptor = null
-        try { descriptor = await descriptorFromDataUrl(next.front) } catch (e) { console.warn('[face] descriptor failed', e) }
-        await api.createWorker(name.trim(), next, descriptor)
+        const descriptors = descriptorsRef.current
+        const primary = descriptors[0] || null  // back-compat
+        await api.createWorker(name.trim(), next, primary, descriptors)
         setStage('done')
         setTimeout(onDone, 1600)
       } catch (e) {
