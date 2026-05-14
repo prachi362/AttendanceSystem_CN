@@ -8,7 +8,8 @@ import { ensureInit, uid, setHeaders } from './_init.js'
 import { listWorkers, updateWorkerState } from '../server/store/workers.js'
 import { appendRow } from '../server/sync/google.js'
 
-const PUNCH_COOLDOWN_MS = 60 * 1000
+// 30 min cooldown: tap once to clock in, then ≥30 min later tap to clock out.
+const PUNCH_COOLDOWN_MS = 30 * 60 * 1000
 
 export default async function handler(req, res) {
   setHeaders(res)
@@ -18,7 +19,7 @@ export default async function handler(req, res) {
     if (req.method === 'GET') return res.status(200).json([])
 
     if (req.method === 'POST') {
-      const { workerId, name, distance } = req.body || {}
+      const { workerId, name, distance, direction: requestedDirection } = req.body || {}
       if (!workerId) return res.status(400).json({ error: 'workerId required' })
 
       const ts = Date.now()
@@ -35,7 +36,9 @@ export default async function handler(req, res) {
       }
 
       const prevState = worker?.currentState || 'out'
-      const direction = prevState === 'in' ? 'out' : 'in'
+      const direction = (requestedDirection === 'in' || requestedDirection === 'out')
+        ? requestedDirection
+        : (prevState === 'in' ? 'out' : 'in')
 
       const punch = {
         id: uid(),

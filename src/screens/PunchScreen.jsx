@@ -2,28 +2,63 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, UserPlus, ScanFace } from 'lucide-react'
 import CameraView from '../components/CameraView.jsx'
 import Confetti from '../components/Confetti.jsx'
-import { useCountdown, CountdownBadge } from '../components/Countdown.jsx'
 import { captureCompressedJpeg } from '../utils/image.js'
-import { bestDescriptor, bestMatch } from '../utils/face.js'
+import { bestDescriptor, bestMatch, detectFace } from '../utils/face.js'
 import { api } from '../utils/api.js'
 
-export default function PunchScreen({ t, onDone, onBack, onRegister }) {
+export default function PunchScreen({ t, direction: requestedDir = null, onDone, onBack, onRegister }) {
   const camRef = useRef(null)
   // capture | identifying | success | unknown | cooldown
   const [stage, setStage] = useState('capture')
   const [photo, setPhoto] = useState(null)
   const [worker, setWorker] = useState(null)
-  const [direction, setDirection] = useState('in')
+  const [resultDirection, setResultDirection] = useState(requestedDir || 'in')
   const [workers, setWorkers] = useState([])
   const [workersLoaded, setWorkersLoaded] = useState(false)
   const [camReady, setCamReady] = useState(false)
   const [flash, setFlash] = useState(false)
+  const [faceLocked, setFaceLocked] = useState(false)
+
+  // Guard to ensure capture() only fires once per session.
+  const capturingRef = useRef(false)
 
   useEffect(() => {
     api.listWorkers()
       .then(ws => { setWorkers(ws); setWorkersLoaded(true) })
       .catch(() => { setWorkers([]); setWorkersLoaded(true) })
   }, [])
+
+  // Live detection loop: as soon as a face is detected in the live preview,
+  // immediately fire capture(). Polls at ~5 fps with TinyFaceDetector (cheap).
+  useEffect(() => {
+    if (stage !== 'capture' || !camReady || !workersLoaded) return
+    let cancelled = false
+    let consecutive = 0  // require 2 in a row to reduce false triggers on flicker
+
+    async function tick() {
+      if (cancelled || capturingRef.current) return
+      const v = camRef.current?.getVideo()
+      if (v) {
+        try {
+          const det = await detectFace(v)
+          if (det && det.score > 0.55) {
+            consecutive++
+            if (consecutive >= 2) {
+              capturingRef.current = true
+              setFaceLocked(true)
+              capture()
+              return
+            }
+          } else {
+            consecutive = 0
+          }
+        } catch (e) { /* keep polling */ }
+      }
+      if (!cancelled) setTimeout(tick, 180)
+    }
+    tick()
+    return () => { cancelled = true }
+  }, [stage, camReady, workersLoaded])
 
   async function capture() {
     const video = camRef.current?.getVideo()
@@ -73,15 +108,15 @@ export default function PunchScreen({ t, onDone, onBack, onRegister }) {
 
     const match = bestSoFar
     try {
-      const r = await api.createPunch(match.worker.id, match.worker.name, data, match.distance)
+      const r = await api.createPunch(match.worker.id, match.worker.name, data, match.distance, requestedDir)
       setWorker(match.worker)
-      setDirection(r.punch?.direction || 'in')
+      setResultDirection(r.punch?.direction || requestedDir)
       setStage('success')
       setTimeout(onDone, 3000)
     } catch (e) {
       if (e.status === 429) {
         setWorker(match.worker)
-        setDirection(e.body?.lastDirection || 'in')
+        setResultDirection(e.body?.lastDirection || requestedDir)
         setStage('cooldown')
         setTimeout(onDone, 2800)
       } else {
@@ -90,11 +125,15 @@ export default function PunchScreen({ t, onDone, onBack, onRegister }) {
     }
   }
 
-  const countdownActive = stage === 'capture' && camReady && workersLoaded
-  const n = useCountdown({ from: 3, active: countdownActive, onDone: capture })
+  function retry() {
+    capturingRef.current = false
+    setFaceLocked(false)
+    setPhoto(null)
+    setStage('capture')
+  }
 
   if (stage === 'success' && worker) {
-    return <SuccessScreen t={t} worker={worker} direction={direction} />
+    return <SuccessScreen t={t} worker={worker} direction={resultDirection} />
   }
 
   if (stage === 'cooldown' && worker) {
@@ -129,7 +168,7 @@ export default function PunchScreen({ t, onDone, onBack, onRegister }) {
           <button onClick={onRegister} className="btn-big btn-success flex items-center justify-center gap-3">
             <UserPlus size={24} /> {t.register}
           </button>
-          <button onClick={() => { setStage('capture'); setPhoto(null) }} className="btn-big btn-ghost">
+          <button onClick={retry} className="btn-big btn-ghost">
             {t.holdStill}
           </button>
         </div>
@@ -137,23 +176,29 @@ export default function PunchScreen({ t, onDone, onBack, onRegister }) {
     )
   }
 
+  const title = t.punchIn
+
   return (
     <div className="flex-1 min-h-0 flex flex-col p-6 gap-4 fade-in">
-      <Header onBack={onBack} title={t.punchIn} />
+      <Header onBack={onBack} title={title} />
 
       <div className="text-center">
         <p className="text-xl text-slate-900" style={{ fontWeight: 600 }}>{t.pose_front}</p>
-        <p className="text-slate-500 text-sm mt-1">{t.holdStill}</p>
+        <p className="text-slate-500 text-sm mt-1">{t.autoCapture}</p>
       </div>
 
       <CameraView
         ref={camRef}
         onReady={() => setCamReady(true)}
         className="flex-1 min-h-0"
-        overlay={countdownActive ? <CountdownBadge n={n} flash={flash} /> : null}
+        overlay={faceLocked ? (
+          <div className="absolute inset-0 ring-4 ring-emerald-400/80 rounded-3xl pointer-events-none" />
+        ) : null}
       />
 
-      <p className="text-center text-slate-500 text-sm">{t.autoCapture}</p>
+      {flash && (
+        <div className="pointer-events-none absolute inset-0 bg-white/80 rounded-3xl" style={{ animation: 'flash 280ms ease-out' }} />
+      )}
     </div>
   )
 }

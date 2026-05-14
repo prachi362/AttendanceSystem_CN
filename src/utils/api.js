@@ -21,6 +21,7 @@ export const api = {
   listWorkers: () => j('GET', '/api/workers'),
   createWorker: (payload) => j('POST', '/api/workers', payload),
   listPunches: (limit = 200) => j('GET', `/api/punches?limit=${limit}`),
-  createPunch: (workerId, name, photo, distance) => j('POST', '/api/punches', { workerId, name, photo, distance }),
+  createPunch: (workerId, name, photo, distance, direction) =>
+    j('POST', '/api/punches', { workerId, name, photo, distance, direction }),
   stats: () => j('GET', '/api/stats')
 }

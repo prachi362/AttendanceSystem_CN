@@ -33,9 +33,9 @@ export default function HomeScreen({ t, lang, setLang, onPunch, onRegister, onDa
         <div className="text-sm text-slate-500 mt-1 capitalize">{dateStr}</div>
       </div>
 
-      {/* 3 stacked gradient buttons — sit right below the welcome card */}
+      {/* Single Punch In/Out button — server auto-toggles based on last state */}
       <div className="flex flex-col gap-3.5">
-        <button onClick={onPunch} className="btn-big btn-primary flex items-center justify-center gap-3">
+        <button onClick={() => onPunch()} className="btn-big btn-primary flex items-center justify-center gap-3">
           <Camera size={26} strokeWidth={2} />
           <span>{t.punchIn}</span>
         </button>

@@ -70,6 +70,21 @@ body {
 }
 .btn-success:hover { filter: brightness(1.05); }
 
+.btn-danger {
+  background: linear-gradient(135deg, #f97316 0%, #c2410c 100%);
+  color: white;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.3) inset,
+    0 12px 30px -8px rgba(249, 115, 22, 0.55),
+    0 4px 10px -2px rgba(249, 115, 22, 0.35);
+}
+.btn-danger:hover { filter: brightness(1.05); }
+
+@keyframes flash {
+  0%   { opacity: 0.9; }
+  100% { opacity: 0; }
+}
+
 .btn-ghost {
   @apply bg-white/70 text-slate-800 border border-slate-200;
   backdrop-filter: blur(8px);

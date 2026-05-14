@@ -12,6 +12,7 @@ const IDLE_MS = 30 * 1000
 export default function App() {
   const [lang, setLang] = useState('en')
   const [screen, setScreen] = useState('home') // home | punch | register | dashboard
+  const [punchDirection, setPunchDirection] = useState(null) // null = let server auto-toggle
   const t = strings[lang]
 
   useEffect(() => {
@@ -40,7 +41,7 @@ export default function App() {
             <HomeScreen
               t={t} lang={lang} setLang={setLang}
               key="home"
-              onPunch={() => setScreen('punch')}
+              onPunch={(dir) => { setPunchDirection(dir || null); setScreen('punch') }}
               onRegister={() => setScreen('register')}
               onDashboard={() => setScreen('dashboard')}
             />
@@ -51,6 +52,7 @@ export default function App() {
           {screen === 'punch' && (
             <PunchScreen
               t={t}
+              direction={punchDirection}
               onBack={() => setScreen('home')}
               onDone={() => setScreen('home')}
               onRegister={() => setScreen('register')}

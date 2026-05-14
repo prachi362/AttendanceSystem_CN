@@ -13,6 +13,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { initOutbox, enqueuePunch, outboxStatus } from './sync/outbox.js'
 import { initWorkerStore, listWorkers as storeListWorkers, createWorker as storeCreateWorker, updateWorkerState } from './store/workers.js'
+import { syncEnabled, readSheet } from './sync/google.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -124,11 +125,13 @@ app.get('/api/punches', (req, res) => {
   res.json(list)
 })
 
-// Cooldown so we don't double-record someone within 60s.
-const PUNCH_COOLDOWN_MS = 60 * 1000
+// Cooldown: a worker must wait at least 30 minutes between successive punches.
+// This both prevents accidental double-taps AND enforces the "punched-in for
+// real" workflow: tap once to clock in, then ≥30 min later tap to clock out.
+const PUNCH_COOLDOWN_MS = 30 * 60 * 1000
 
 app.post('/api/punches', async (req, res) => {
-  const { workerId, name, photo, distance } = req.body || {}
+  const { workerId, name, photo, distance, direction: requestedDirection } = req.body || {}
   const buf = dataUrlToBuffer(photo)
   if (!buf) return res.status(400).json({ error: 'photo (data URL) required' })
 
@@ -152,9 +155,12 @@ app.post('/api/punches', async (req, res) => {
   const rel = `data/punches/${dateFolder(ts)}/${filename}`
   fs.writeFileSync(path.join(dayFolder, filename), buf)
 
-  // Toggle direction off the worker's current state.
+  // Honor explicit direction from the client (separate Punch In / Punch Out buttons).
+  // Fall back to toggling off the worker's current state for backward compat.
   const prevState = worker?.currentState || 'out'
-  const direction = prevState === 'in' ? 'out' : 'in'
+  const direction = (requestedDirection === 'in' || requestedDirection === 'out')
+    ? requestedDirection
+    : (prevState === 'in' ? 'out' : 'in')
 
   const punch = {
     id: uid(),
@@ -194,20 +200,62 @@ app.use('/data', express.static(DATA_DIR))
 
 // --- Stats ----------------------------------------------------------------
 
-app.get('/api/stats', (_req, res) => {
-  const db = readDB()
-  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
-  const today = db.punches.filter(p => p.ts >= startOfDay.getTime())
-  const workers = db.workers.filter(w => !w.deactivated)
-  const clockedIn = workers.filter(w => w.currentState === 'in').length
-  const last = db.punches[db.punches.length - 1] || null
-  res.json({
-    workers: workers.length,
-    punches: db.punches.length,
-    todayPunches: today.length,
-    clockedIn,
-    lastPunch: last ? { name: last.name, ts: last.ts, direction: last.direction || 'in' } : null
-  })
+app.get('/api/stats', async (_req, res) => {
+  try {
+    // Source of truth = the Google Sheet (Workers tab + Sheet1). Falls back to
+    // local db.json if sync isn't configured.
+    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+
+    if (syncEnabled()) {
+      const workers = await storeListWorkers()
+      const clockedIn = workers.filter(w => w.currentState === 'in').length
+
+      // Pull punch log from Sheet1 (header row + data rows).
+      let punchRows = []
+      try {
+        const tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1'
+        const rows = await readSheet(tab)
+        punchRows = rows.slice(1).filter(r => r && r[0])  // skip header, require timestamp
+      } catch (e) {
+        console.warn('[api/stats] could not read punch sheet:', e.message)
+      }
+
+      const todayPunches = punchRows.filter(r => {
+        const ts = Date.parse(r[0])
+        return Number.isFinite(ts) && ts >= startOfDay.getTime()
+      }).length
+
+      const last = punchRows[punchRows.length - 1] || null
+      return res.json({
+        workers: workers.length,
+        punches: punchRows.length,
+        todayPunches,
+        clockedIn,
+        lastPunch: last ? {
+          name: last[1] || 'Unknown',
+          ts: Date.parse(last[0]) || Date.now(),
+          direction: (last[3] || 'in').toLowerCase()
+        } : null
+      })
+    }
+
+    // Local-only fallback.
+    const db = readDB()
+    const today = db.punches.filter(p => p.ts >= startOfDay.getTime())
+    const workers = db.workers.filter(w => !w.deactivated)
+    const clockedIn = workers.filter(w => w.currentState === 'in').length
+    const last = db.punches[db.punches.length - 1] || null
+    res.json({
+      workers: workers.length,
+      punches: db.punches.length,
+      todayPunches: today.length,
+      clockedIn,
+      lastPunch: last ? { name: last.name, ts: last.ts, direction: last.direction || 'in' } : null
+    })
+  } catch (e) {
+    console.error('[api/stats]', e)
+    res.status(500).json({ error: 'stats_unavailable' })
+  }
 })
 
 // --- Sync status (for debugging) ------------------------------------------

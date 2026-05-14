@@ -39,6 +39,16 @@ async function descriptorFromInput(input, { fast = false } = {}) {
   return res?.descriptor ? Array.from(res.descriptor) : null
 }
 
+// Fast presence check — does the frame contain a face right now?
+// Uses TinyFaceDetector (no landmarks, no descriptor) so it's cheap enough
+// to poll every ~200ms for "trigger capture on first detection" UX.
+export async function detectFace(videoEl) {
+  if (!videoEl) return null
+  await ensureModels()
+  const det = await faceapi.detectSingleFace(videoEl, tinyOptions)
+  return det || null
+}
+
 // Descriptor from a data URL (used as a fallback for registration photos already captured).
 export async function descriptorFromDataUrl(dataUrl, opts) {
   const img = await faceapi.fetchImage(dataUrl)
