@@ -17,27 +17,32 @@ const HEADERS = ['id','name','employeeId','createdAt','currentState','lastPunchT
 const CACHE_TTL_MS = 30_000
 
 let DB_FILE = null
+let stateless = false  // when true, never touch the filesystem (e.g. Vercel)
 let cache = { rows: [], at: 0 }
 
-export async function initWorkerStore({ dataDir }) {
-  DB_FILE = path.join(dataDir, 'db.json')
+export async function initWorkerStore({ dataDir, stateless: isStateless = false } = {}) {
+  stateless = isStateless || !dataDir
+  if (!stateless) DB_FILE = path.join(dataDir, 'db.json')
   if (syncEnabled()) {
     try {
       await ensureTab(TAB, HEADERS)
-      console.log(`[store] Workers tab ready in Google Sheet`)
+      console.log(`[store] Workers tab ready in Google Sheet${stateless ? ' (stateless mode)' : ''}`)
     } catch (e) {
-      console.warn('[store] ensureTab failed — falling back to local db.json:', e.message)
+      console.warn('[store] ensureTab failed:', e.message)
     }
   }
 }
 
-// Read local db.json (used when sync disabled OR as last-ditch fallback).
+// Read local db.json (used when sync disabled OR as last-ditch fallback). No-op when stateless.
 function readLocal() {
+  if (stateless || !DB_FILE) return { workers: [], punches: [] }
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }
   catch { return { workers: [], punches: [] } }
 }
 function writeLocal(db) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2))
+  if (stateless || !DB_FILE) return
+  try { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)) }
+  catch (e) { console.warn('[store] writeLocal failed:', e.message) }
 }
 
 function rowToWorker(row) {
