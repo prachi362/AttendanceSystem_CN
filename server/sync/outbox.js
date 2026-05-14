@@ -125,7 +125,7 @@ async function processItem(item) {
   // 2. Always append a row to the sheet, even if photo upload was skipped/failed.
   //   Columns: Timestamp | Name | Employee ID | Direction | Photo | Worker ID | Match Distance
   const row = [
-    new Date(p.ts).toISOString(),
+    p.localTime || new Date(p.ts).toISOString(),
     p.name || '',
     p.employeeId || '',
     (p.direction || '').toUpperCase(),

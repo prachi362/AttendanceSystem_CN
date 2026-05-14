@@ -1,6 +1,14 @@
 // Thin client for the local Express backend.
 const BASE = ''
 
+// "2026-05-13 18:30:15" in the user's local timezone — sortable, readable,
+// matches what the kiosk shows on screen (no UTC drift).
+function formatLocal(d) {
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 async function j(method, url, body) {
   const res = await fetch(BASE + url, {
     method,

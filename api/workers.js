@@ -15,9 +15,14 @@ export default async function handler(req, res) {
 
     if (req.method === 'GET') {
       const workers = await listWorkers()
+      // Strip local photo paths — they exist only on the kiosk that registered
+      // the worker. On Vercel there is no /data/* static handler, so returning
+      // them would cause 404s when the UI tries <img src=...>.
       return res.status(200).json(workers.map(w => ({
         id: w.id, name: w.name, employeeId: w.employeeId || null,
-        createdAt: w.createdAt, folder: w.folder, thumb: w.thumb,
+        createdAt: w.createdAt,
+        folder: '',
+        thumb: '',
         descriptor: w.descriptor || null,
         descriptors: w.descriptors || null,
         currentState: w.currentState || 'out',

@@ -19,7 +19,7 @@ export default async function handler(req, res) {
     if (req.method === 'GET') return res.status(200).json([])
 
     if (req.method === 'POST') {
-      const { workerId, name, distance, direction: requestedDirection } = req.body || {}
+      const { workerId, name, distance, direction: requestedDirection, localTime } = req.body || {}
       if (!workerId) return res.status(400).json({ error: 'workerId required' })
 
       const ts = Date.now()
@@ -50,10 +50,11 @@ export default async function handler(req, res) {
         distance: typeof distance === 'number' ? distance : null
       }
 
-      // 1. Append punch row (Sheet1).
+      // 1. Append punch row (Sheet1). Prefer the client's local-time string so
+      //    the sheet matches the clock on the kiosk (no UTC drift).
       try {
         await appendRow([
-          new Date(ts).toISOString(),
+          localTime || new Date(ts).toISOString(),
           punch.name,
           punch.employeeId || '',
           direction.toUpperCase(),

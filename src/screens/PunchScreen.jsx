@@ -218,9 +218,12 @@ function SuccessScreen({ t, worker, direction }) {
           alt={worker.name}
           className={`w-56 h-56 rounded-full object-cover ring-8 ${ringColor}`}
           style={{ boxShadow: '0 20px 50px -20px rgba(15,23,42,0.3)' }}
+          onError={(e) => { e.currentTarget.style.display = 'none' }}
         />
       ) : (
-        <div className={`w-56 h-56 rounded-full bg-slate-100 ring-8 ${ringColor}`} />
+        <div className={`w-56 h-56 rounded-full bg-slate-100 ring-8 ${ringColor} flex items-center justify-center text-5xl text-slate-400`} style={{ fontWeight: 600 }}>
+          {worker.name?.[0]?.toUpperCase() || '?'}
+        </div>
       )}
 
       <div className={`px-8 py-3 rounded-full text-white text-3xl tracking-widest ${badgeBg}`} style={{ fontWeight: 600 }}>

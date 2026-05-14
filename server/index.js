@@ -131,7 +131,7 @@ app.get('/api/punches', (req, res) => {
 const PUNCH_COOLDOWN_MS = 30 * 60 * 1000
 
 app.post('/api/punches', async (req, res) => {
-  const { workerId, name, photo, distance, direction: requestedDirection } = req.body || {}
+  const { workerId, name, photo, distance, direction: requestedDirection, localTime } = req.body || {}
   const buf = dataUrlToBuffer(photo)
   if (!buf) return res.status(400).json({ error: 'photo (data URL) required' })
 
@@ -169,6 +169,7 @@ app.post('/api/punches', async (req, res) => {
     name: name || 'Unknown',
     direction,
     ts,
+    localTime: localTime || null,  // formatted local-time string from the client
     photo: rel,
     photoAbs: path.join(dayFolder, filename),  // for the sync worker
     distance: typeof distance === 'number' ? distance : null,
