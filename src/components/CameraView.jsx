@@ -12,8 +12,15 @@ const CameraView = forwardRef(function CameraView({ onError, onReady, overlay, a
     let stream
     async function start() {
       try {
+        // Portrait 720x1280 to keep CPU/GPU load down on the kiosk device.
+        // The browser will pick the closest supported native resolution.
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 960 } },
+          video: {
+            facingMode: 'user',
+            width:  { ideal: 720 },
+            height: { ideal: 1280 },
+            frameRate: { ideal: 24, max: 30 }
+          },
           audio: false
         })
         if (videoRef.current) {

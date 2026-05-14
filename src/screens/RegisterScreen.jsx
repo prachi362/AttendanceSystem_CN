@@ -196,8 +196,8 @@ function ProgressDots({ total, current }) {
 function Field({ label, children }) {
   return (
     <label className="block">
-      <span className="text-sm uppercase tracking-wider text-slate-500">{label}</span>
-      <div className="mt-2">{children}</div>
+      <span className="block text-center text-base uppercase tracking-widest text-slate-500" style={{ fontWeight: 500 }}>{label}</span>
+      <div className="mt-3">{children}</div>
     </label>
   )
 }

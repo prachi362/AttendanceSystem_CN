@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { initOutbox, enqueuePunch, outboxStatus } from './sync/outbox.js'
+import { initWorkerStore, listWorkers as storeListWorkers, createWorker as storeCreateWorker, updateWorkerState } from './store/workers.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -56,19 +57,24 @@ function dateFolder(ts = Date.now()) {
 
 // --- Workers ---------------------------------------------------------------
 
-app.get('/api/workers', (_req, res) => {
-  const db = readDB()
-  res.json(db.workers.filter(w => !w.deactivated).map(w => ({
-    id: w.id, name: w.name, employeeId: w.employeeId || null,
-    createdAt: w.createdAt, folder: w.folder, thumb: w.thumb,
-    descriptor: w.descriptor || null,
-    descriptors: w.descriptors || null,
-    currentState: w.currentState || 'out',
-    lastPunchTs: w.lastPunchTs || null
-  })))
+app.get('/api/workers', async (_req, res) => {
+  try {
+    const workers = await storeListWorkers()
+    res.json(workers.map(w => ({
+      id: w.id, name: w.name, employeeId: w.employeeId || null,
+      createdAt: w.createdAt, folder: w.folder, thumb: w.thumb,
+      descriptor: w.descriptor || null,
+      descriptors: w.descriptors || null,
+      currentState: w.currentState || 'out',
+      lastPunchTs: w.lastPunchTs || null
+    })))
+  } catch (e) {
+    console.error('[api/workers]', e)
+    res.status(500).json({ error: 'workers_unavailable' })
+  }
 })
 
-app.post('/api/workers', (req, res) => {
+app.post('/api/workers', async (req, res) => {
   const { name, employeeId, photos, descriptor, descriptors } = req.body || {}
   if (!name || !photos || !photos.front) {
     return res.status(400).json({ error: 'name and photos.front are required' })
@@ -101,9 +107,11 @@ app.post('/api/workers', (req, res) => {
     lastPunchTs: null,
     deactivated: false
   }
-  const db = readDB()
-  db.workers.push(worker)
-  writeDB(db)
+  try {
+    await storeCreateWorker(worker)
+  } catch (e) {
+    console.error('[api/workers POST]', e)
+  }
   res.json({ ok: true, worker: { id: worker.id, name: worker.name, employeeId: worker.employeeId, folder: worker.folder, thumb: worker.thumb } })
 })
 
@@ -119,7 +127,7 @@ app.get('/api/punches', (req, res) => {
 // Cooldown so we don't double-record someone within 60s.
 const PUNCH_COOLDOWN_MS = 60 * 1000
 
-app.post('/api/punches', (req, res) => {
+app.post('/api/punches', async (req, res) => {
   const { workerId, name, photo, distance } = req.body || {}
   const buf = dataUrlToBuffer(photo)
   if (!buf) return res.status(400).json({ error: 'photo (data URL) required' })
@@ -167,7 +175,14 @@ app.post('/api/punches', (req, res) => {
   }
   writeDB(db)
 
-  // Best-effort: push to Microsoft Graph in the background. Never blocks the response.
+  // Sync the worker's new state back to the Workers tab in Sheets (best-effort).
+  if (worker) {
+    updateWorkerState(worker.id, direction, ts).catch(e =>
+      console.warn('[store] updateWorkerState bg failed:', e.message)
+    )
+  }
+
+  // Best-effort: push the punch row to Sheets/Drive in the background.
   try { enqueuePunch(punch) } catch (e) { console.warn('[sync] enqueue failed:', e.message) }
 
   res.json({ ok: true, punch })
@@ -199,8 +214,9 @@ app.get('/api/stats', (_req, res) => {
 app.get('/api/sync/status', (_req, res) => res.json(outboxStatus()))
 
 const PORT = process.env.PORT || 5174
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`[attendance] api+data on http://localhost:${PORT}`)
   console.log(`[attendance] data dir: ${DATA_DIR}`)
   initOutbox({ dataDir: DATA_DIR })
+  await initWorkerStore({ dataDir: DATA_DIR })
 })

@@ -33,22 +33,21 @@ export default function PunchScreen({ t, onDone, onBack, onRegister }) {
     setPhoto(data)
     setStage('identifying')
 
-    // Sample up to 8 frames over ~2.4s and keep the best match.
-    // 0.60 is face-api's standard "same person" cutoff. Tighter = more false negatives.
+    // Sample up to 4 frames over ~1.2s using the SAME detector that registration
+    // used (SSD MobileNet). Using a different detector here gives subtly different
+    // face crops, which throws off matching even for the correct person.
     const THRESHOLD = 0.60
-    const ATTEMPTS = 8
+    const ATTEMPTS = 4
     const INTERVAL = 300
 
     let bestSoFar = null
     try {
-      // First, descriptor from the captured frame
       const d0 = await bestDescriptor({ video, dataUrl: data })
       if (d0) {
-        const m = bestMatch(workers, d0, 1.0) // get nearest regardless, then check threshold below
+        const m = bestMatch(workers, d0, 1.0)
         if (m && (!bestSoFar || m.distance < bestSoFar.distance)) bestSoFar = m
       }
 
-      // Then keep sampling live frames
       for (let i = 1; i < ATTEMPTS; i++) {
         await new Promise(r => setTimeout(r, INTERVAL))
         const v = camRef.current?.getVideo()
@@ -57,8 +56,7 @@ export default function PunchScreen({ t, onDone, onBack, onRegister }) {
         if (!d) continue
         const m = bestMatch(workers, d, 1.0)
         if (m && (!bestSoFar || m.distance < bestSoFar.distance)) bestSoFar = m
-        // Early exit if we're very confident already
-        if (bestSoFar && bestSoFar.distance < 0.40) break
+        if (bestSoFar && bestSoFar.distance < 0.40) break  // confident — stop early
       }
     } catch (e) {
       console.warn('[punch] descriptor error:', e)

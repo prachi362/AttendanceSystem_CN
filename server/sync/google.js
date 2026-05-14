@@ -58,19 +58,55 @@ export function photoUploadEnabled() {
 
 // --- Sheets ----------------------------------------------------------------
 
-// Append one row to the sheet. `values` is a flat array of cell values.
-export async function appendRow(values) {
-  const sheetId = process.env.GOOGLE_SHEET_ID
-  const tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1'
-  const range = encodeURIComponent(`${tab}!A1`)
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`
+function sheetId() { return process.env.GOOGLE_SHEET_ID }
 
-  const r = await client().request({
-    url,
-    method: 'POST',
-    data: { values: [values] }
-  })
+// Append one row to a tab. `values` is a flat array of cell values.
+export async function appendRow(values, tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1') {
+  const range = encodeURIComponent(`${tab}!A1`)
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId()}/values/${range}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`
+  const r = await client().request({ url, method: 'POST', data: { values: [values] } })
   return r.data
+}
+
+// Read all rows from a tab. Returns array of row arrays (header row included).
+export async function readSheet(tab) {
+  const range = encodeURIComponent(`${tab}!A1:Z`)
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId()}/values/${range}`
+  const r = await client().request({ url, method: 'GET' })
+  return r.data.values || []
+}
+
+// Update a specific range. `range` like "Workers!E5:F5", values is a flat row.
+export async function updateRange(range, values) {
+  const encoded = encodeURIComponent(range)
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId()}/values/${encoded}?valueInputOption=USER_ENTERED`
+  const r = await client().request({ url, method: 'PUT', data: { values: [values] } })
+  return r.data
+}
+
+// Ensure a tab exists with the given header row. Idempotent — safe to call on boot.
+export async function ensureTab(tab, headers) {
+  // 1. Check if tab exists by trying to read it.
+  try {
+    const rows = await readSheet(tab)
+    if (rows.length === 0) {
+      // Tab exists but empty — write the header row.
+      await updateRange(`${tab}!A1`, headers)
+    }
+    return
+  } catch (e) {
+    // 400 "Unable to parse range" means the tab doesn't exist — create it.
+    if (e?.response?.status !== 400) throw e
+  }
+
+  // 2. Create the tab via batchUpdate.
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId()}:batchUpdate`
+  await client().request({
+    url, method: 'POST',
+    data: { requests: [{ addSheet: { properties: { title: tab } } }] }
+  })
+  // 3. Write header row.
+  await updateRange(`${tab}!A1`, headers)
 }
 
 // --- Drive -----------------------------------------------------------------

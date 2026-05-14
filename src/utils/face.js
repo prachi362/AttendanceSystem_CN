@@ -1,58 +1,67 @@
-// Face recognition using face-api.js.
+// Face recognition using @vladmandic/face-api (maintained fork of face-api.js
+// with retrained, more accurate models). Drop-in compatible API.
 // Accuracy tweaks:
 //  - SSD MobileNet detector (more accurate than TinyFaceDetector)
 //  - Compute descriptors directly from the <video> element (avoids JPEG loss)
 //  - Multi-pose enrollment: store an array of descriptors per worker and
 //    match against the min distance across all of them
-import * as faceapi from 'face-api.js'
+//
+// Note: descriptors from the original face-api.js are NOT interchangeable with
+// these — workers registered before the upgrade must re-register.
+import * as faceapi from '@vladmandic/face-api'
 
-const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models'
+const MODEL_URL = 'https://vladmandic.github.io/face-api/model'
 
 let loadingPromise = null
 export function ensureModels() {
   if (loadingPromise) return loadingPromise
   loadingPromise = Promise.all([
-    faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+    faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),       // accurate, used for enrollment
+    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),     // fast, used for punch loop
     faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
     faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
   ]).catch(err => { loadingPromise = null; throw err })
   return loadingPromise
 }
 
-// Permissive detector confidence so we catch faces in tougher lighting/angles.
-const detectorOptions = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.45 })
+// Accurate but heavier — use for registration where users hold still.
+const ssdOptions  = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.45 })
+// Light + fast — use for the live punch loop on low-end kiosk hardware.
+const tinyOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 })
 
-async function descriptorFromInput(input) {
+async function descriptorFromInput(input, { fast = false } = {}) {
   await ensureModels()
+  const opts = fast ? tinyOptions : ssdOptions
   const res = await faceapi
-    .detectSingleFace(input, detectorOptions)
+    .detectSingleFace(input, opts)
     .withFaceLandmarks()
     .withFaceDescriptor()
   return res?.descriptor ? Array.from(res.descriptor) : null
 }
 
 // Descriptor from a data URL (used as a fallback for registration photos already captured).
-export async function descriptorFromDataUrl(dataUrl) {
+export async function descriptorFromDataUrl(dataUrl, opts) {
   const img = await faceapi.fetchImage(dataUrl)
-  return descriptorFromInput(img)
+  return descriptorFromInput(img, opts)
 }
 
 // Descriptor straight from the live <video> element — best quality (no JPEG compression loss).
-export async function descriptorFromVideo(videoEl) {
+export async function descriptorFromVideo(videoEl, opts) {
   if (!videoEl) return null
-  return descriptorFromInput(videoEl)
+  return descriptorFromInput(videoEl, opts)
 }
 
 // Best of both: try the video first, fall back to the captured data URL.
-export async function bestDescriptor({ video, dataUrl }) {
+// Pass { fast: true } to use the light TinyFaceDetector.
+export async function bestDescriptor({ video, dataUrl, fast = false }) {
   try {
     if (video) {
-      const d = await descriptorFromVideo(video)
+      const d = await descriptorFromVideo(video, { fast })
       if (d) return d
     }
   } catch (e) { /* ignore, try fallback */ }
   if (dataUrl) {
-    try { return await descriptorFromDataUrl(dataUrl) } catch (e) { return null }
+    try { return await descriptorFromDataUrl(dataUrl, { fast }) } catch (e) { return null }
   }
   return null
 }

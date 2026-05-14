@@ -84,20 +84,45 @@ async function drain() {
   }
 }
 
+// Module-scoped flag: once Drive returns a permanent error (e.g. service-account
+// has no storage), we stop attempting Drive uploads for the rest of the process.
+// This prevents endless retry loops AND ensures the sheet still gets the row.
+let drivePermanentlyDisabled = false
+
+function isPermanentDriveError(err) {
+  const status = err?.response?.status
+  const reason = err?.response?.data?.error?.errors?.[0]?.reason
+  // 403 storageQuotaExceeded -> not a Shared Drive; 404 -> folder not visible
+  return status === 403 || status === 404 || reason === 'storageQuotaExceeded'
+}
+
 async function processItem(item) {
   const p = item.payload
-  // 1. Upload photo to Drive — only if a folder is configured (requires Shared Drive).
+
+  // 1. Try Drive upload. NEVER let it block the sheet append.
   let photoUrl = ''
-  if (photoUploadEnabled() && p.photoAbs && fs.existsSync(p.photoAbs)) {
-    const buf = fs.readFileSync(p.photoAbs)
-    const stamp = new Date(p.ts)
-    const day = `${stamp.getFullYear()}-${pad(stamp.getMonth()+1)}-${pad(stamp.getDate())}`
-    const filename = `${day}_${p.ts}_${safe(p.name || p.workerId || 'punch')}.jpg`
-    const uploaded = await uploadPhoto({ filename, buffer: buf })
-    photoUrl = uploaded.webViewLink || ''
+  if (photoUploadEnabled() && !drivePermanentlyDisabled && p.photoAbs && fs.existsSync(p.photoAbs)) {
+    try {
+      const buf = fs.readFileSync(p.photoAbs)
+      const stamp = new Date(p.ts)
+      const day = `${stamp.getFullYear()}-${pad(stamp.getMonth()+1)}-${pad(stamp.getDate())}`
+      const filename = `${day}_${p.ts}_${safe(p.name || p.workerId || 'punch')}.jpg`
+      const uploaded = await uploadPhoto({ filename, buffer: buf })
+      photoUrl = uploaded.webViewLink || ''
+    } catch (e) {
+      if (isPermanentDriveError(e)) {
+        drivePermanentlyDisabled = true
+        console.warn('[sync] Drive uploads disabled for this session — ' +
+                     'folder is not a Shared Drive or service account lacks access. ' +
+                     'Sheet rows will still sync.')
+      } else {
+        // Transient error — log and continue; we'll still write the sheet row.
+        console.warn('[sync] Drive upload failed (continuing without photo):', e.message)
+      }
+    }
   }
 
-  // 2. Append a row to the sheet.
+  // 2. Always append a row to the sheet, even if photo upload was skipped/failed.
   //   Columns: Timestamp | Name | Employee ID | Direction | Photo | Worker ID | Match Distance
   const row = [
     new Date(p.ts).toISOString(),
