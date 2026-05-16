@@ -142,12 +142,64 @@ app.post('/api/workers', async (req, res) => {
 
 // --- Punches ---------------------------------------------------------------
 
-app.get('/api/punches', (req, res) => {
-  const db = readDB()
+// Returns the punch log. Source of truth is Sheet1 in Google Sheets so that
+// data survives Azure redeploys (which wipe the local `data/` folder). Falls
+// back to the local db.json if Sheets isn't reachable.
+app.get('/api/punches', async (req, res) => {
   const { limit = 200 } = req.query
-  const list = db.punches.slice(-Number(limit)).reverse()
+  const n = Math.max(1, Math.min(2000, Number(limit) || 200))
+
+  if (syncEnabled()) {
+    try {
+      const list = await readPunchesFromSheet(n)
+      return res.json(list)
+    } catch (e) {
+      console.warn('[api/punches] sheet read failed, falling back to local db:', e.message)
+    }
+  }
+
+  const db = readDB()
+  const list = db.punches.slice(-n).reverse()
   res.json(list)
 })
+
+// Parse Sheet1 into the punch shape the dashboard expects.
+// Sheet columns: A=ts | B=name | C=empId | D=dir | E=photo(HYPERLINK) | F=workerId | G=distance | H=kind | I=hours
+async function readPunchesFromSheet(limit) {
+  const tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1'
+  // We read formulas so we can extract the Drive URL out of =HYPERLINK("url","photo").
+  const rows = await readSheet(tab, 'formula')
+  const out = []
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i]
+    if (!r || !r[0]) continue
+    const ts = Date.parse(String(r[0]).includes('T') ? r[0] : String(r[0]).replace(' ', 'T'))
+    if (!Number.isFinite(ts)) continue
+    const photoCell = r[4] || ''
+    let photoUrl = ''
+    const m = typeof photoCell === 'string' && photoCell.match(/HYPERLINK\("([^"]+)"/i)
+    if (m) photoUrl = m[1]
+    else if (typeof photoCell === 'string' && /^https?:\/\//i.test(photoCell)) photoUrl = photoCell
+
+    const distance = parseFloat(r[6])
+    const hours = parseFloat(r[8])
+    out.push({
+      id: `${ts}_${r[5] || ''}`,
+      ts,
+      name: r[1] || 'Unknown',
+      employeeId: r[2] || null,
+      direction: String(r[3] || 'in').toLowerCase() === 'out' ? 'out' : 'in',
+      photoUrl: photoUrl || null,
+      workerId: r[5] || null,
+      distance: Number.isFinite(distance) ? distance : null,
+      kind: (String(r[7] || '').toLowerCase() === 'employee') ? 'employee' : 'worker',
+      hoursWorked: Number.isFinite(hours) ? hours : null
+    })
+  }
+  // Newest first, capped at limit.
+  out.sort((a, b) => b.ts - a.ts)
+  return out.slice(0, limit)
+}
 
 // Punch policy:
 //   - DEBOUNCE: same direction within 30 s = ignored (accidental double tap)

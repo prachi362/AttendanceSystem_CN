@@ -69,9 +69,13 @@ export async function appendRow(values, tab = process.env.GOOGLE_SHEET_TAB || 'S
 }
 
 // Read all rows from a tab. Returns array of row arrays (header row included).
-export async function readSheet(tab) {
+// `mode` controls valueRenderOption:
+//   - 'formatted' (default): user-visible strings, HYPERLINK shows its display label.
+//   - 'formula':            raw cell formulas so we can extract URLs from =HYPERLINK(...).
+export async function readSheet(tab, mode = 'formatted') {
   const range = encodeURIComponent(`${tab}!A1:Z`)
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId()}/values/${range}`
+  const renderOpt = mode === 'formula' ? 'FORMULA' : 'FORMATTED_VALUE'
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId()}/values/${range}?valueRenderOption=${renderOpt}`
   const r = await client().request({ url, method: 'GET' })
   return r.data.values || []
 }

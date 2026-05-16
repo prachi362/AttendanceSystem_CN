@@ -68,10 +68,14 @@ export default function DashboardScreen({ t, onBack }) {
                 {g.label}
               </div>
               <div className="divide-y divide-slate-100">
-                {g.items.map(p => (
+                {g.items.map(p => {
+                  // Sheet-sourced rows carry an absolute Drive URL in `photoUrl`.
+                  // Local-db rows carry a relative path in `photo` (legacy).
+                  const src = p.photoUrl || (p.photo ? '/' + p.photo : null)
+                  return (
                   <div key={p.id} className="grid grid-cols-[56px_1fr_60px_70px_90px] gap-3 px-4 py-2.5 items-center hover:bg-slate-50">
-                    {p.photo ? (
-                      <img src={'/' + p.photo} alt="" className="w-12 h-12 rounded-xl object-cover bg-slate-100" />
+                    {src ? (
+                      <img src={src} alt="" referrerPolicy="no-referrer" className="w-12 h-12 rounded-xl object-cover bg-slate-100" />
                     ) : <div className="w-12 h-12 rounded-xl bg-slate-100" />}
                     <div className="min-w-0">
                       <div className="text-slate-900 truncate" style={{ fontWeight: 600 }}>{p.name}</div>
@@ -84,7 +88,8 @@ export default function DashboardScreen({ t, onBack }) {
                       {new Date(p.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           ))}
