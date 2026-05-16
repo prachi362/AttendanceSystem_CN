@@ -51,7 +51,7 @@ const CameraView = forwardRef(function CameraView({ onError, onReady, overlay, a
         playsInline
         muted
         className="absolute inset-0 w-full h-full object-contain"
-        style={{ transform: 'scaleX(-1)' }}
+        style={{ transform: 'scaleX(-1)', WebkitTransform: 'scaleX(-1)' }}
       />
 
       {/* Vignette */}
