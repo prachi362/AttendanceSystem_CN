@@ -85,7 +85,7 @@ export default function DashboardScreen({ t, onBack }) {
                       {typeof p.hoursWorked === 'number' ? p.hoursWorked.toFixed(2) : '—'}
                     </div>
                     <div className="text-right text-sm text-slate-700 tabular-nums">
-                      {new Date(p.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {formatTime(p)}
                     </div>
                   </div>
                   )
@@ -99,14 +99,36 @@ export default function DashboardScreen({ t, onBack }) {
   )
 }
 
+// Return the punch's true local Date.
+//   - Sheet-backed rows have `localTime` like "2026-05-16 12:10:49" — parse it
+//     in the client's TZ so the kiosk's wall-clock time is what we display.
+//   - Legacy rows only have `ts` (epoch ms).
+function punchDate(p) {
+  if (p.localTime) {
+    // Browsers parse "YYYY-MM-DD HH:MM:SS" as local time.
+    const iso = p.localTime.includes('T') ? p.localTime : p.localTime.replace(' ', 'T')
+    const d = new Date(iso)
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  return new Date(p.ts)
+}
+
+function formatTime(p) {
+  return punchDate(p).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
 // Group punches into per-day buckets, newest day first, with a human-readable label.
 function groupByDay(items) {
   const buckets = new Map()
   for (const p of items) {
-    const d = new Date(p.ts)
+    const d = punchDate(p)
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
     if (!buckets.has(key)) buckets.set(key, [])
     buckets.get(key).push(p)
+  }
+  // Newest punch first within each day.
+  for (const arr of buckets.values()) {
+    arr.sort((a, b) => punchDate(b).getTime() - punchDate(a).getTime())
   }
   const today = new Date(); today.setHours(0,0,0,0)
   const yesterday = new Date(today.getTime() - 86400000)

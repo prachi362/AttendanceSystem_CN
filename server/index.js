@@ -163,34 +163,124 @@ app.get('/api/punches', async (req, res) => {
   res.json(list)
 })
 
+// Convert a Google Sheets serial date (days since 1899-12-30, with the time
+// as the fractional part) to a JS epoch ms. 25569 is the day offset between
+// the Sheets epoch and the JS epoch (1970-01-01).
+function sheetsSerialToMs(n) {
+  return Math.round((n - 25569) * 86400 * 1000)
+}
+
+// Coerce whatever the timestamp cell contains (serial number OR string) into
+// JS epoch ms. Returns NaN if we can't parse it.
+function parseSheetTimestamp(cell) {
+  if (typeof cell === 'number' && Number.isFinite(cell)) return sheetsSerialToMs(cell)
+  if (typeof cell === 'string' && cell.trim()) {
+    const s = cell.includes('T') ? cell : cell.replace(' ', 'T')
+    const ms = Date.parse(s)
+    if (Number.isFinite(ms)) return ms
+    // Some sheets store the serial number as a string ("46158.5075...").
+    const n = parseFloat(cell)
+    if (Number.isFinite(n) && n > 1000) return sheetsSerialToMs(n)
+  }
+  return NaN
+}
+
+// Scan the local punches/ folder and build an index of every photo file,
+// grouped by worker id. Used as a fallback when Sheet1's Photo column is
+// empty (e.g., when Drive upload failed). Files look like:
+//   data/punches/<YYYY-MM-DD>/<ts>_<workerId>.jpg
+function buildLocalPhotoIndex() {
+  const byWorker = new Map() // workerId -> [{ ts, rel, day }, ...]
+  if (!fs.existsSync(PUNCHES_DIR)) return byWorker
+  try {
+    for (const day of fs.readdirSync(PUNCHES_DIR)) {
+      const dayPath = path.join(PUNCHES_DIR, day)
+      let stat
+      try { stat = fs.statSync(dayPath) } catch { continue }
+      if (!stat.isDirectory()) continue
+      for (const file of fs.readdirSync(dayPath)) {
+        const m = file.match(/^(\d+)_(.+)\.jpg$/i)
+        if (!m) continue
+        const ts = parseInt(m[1], 10)
+        const workerId = m[2]
+        const rel = `data/punches/${day}/${file}`
+        if (!byWorker.has(workerId)) byWorker.set(workerId, [])
+        byWorker.get(workerId).push({ ts, rel, day })
+      }
+    }
+  } catch (e) {
+    console.warn('[localPhotoIndex] scan failed:', e.message)
+  }
+  return byWorker
+}
+
+// Find the best local photo for a given (workerId, approx ts). Picks the
+// file whose timestamp is closest to `ts`. Returns the relative URL or null.
+function findLocalPhoto(index, workerId, ts) {
+  if (!workerId) return null
+  const arr = index.get(workerId)
+  if (!arr || !arr.length) return null
+  if (!Number.isFinite(ts)) return arr[arr.length - 1].rel
+  let best = arr[0]
+  let bestDiff = Math.abs(arr[0].ts - ts)
+  for (let i = 1; i < arr.length; i++) {
+    const d = Math.abs(arr[i].ts - ts)
+    if (d < bestDiff) { best = arr[i]; bestDiff = d }
+  }
+  return best.rel
+}
+
 // Parse Sheet1 into the punch shape the dashboard expects.
 // Sheet columns: A=ts | B=name | C=empId | D=dir | E=photo(HYPERLINK) | F=workerId | G=distance | H=kind | I=hours
+//
+// We do TWO reads in parallel:
+//   - 'formatted': renders the timestamp as the wall-clock string the user sees,
+//                  and renders HYPERLINK formulas as their display label.
+//   - 'formula':   gives us the raw =HYPERLINK("url","photo") so we can extract URLs.
 async function readPunchesFromSheet(limit) {
   const tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1'
-  // We read formulas so we can extract the Drive URL out of =HYPERLINK("url","photo").
-  const rows = await readSheet(tab, 'formula')
+  const [formatted, formulas] = await Promise.all([
+    readSheet(tab, 'formatted'),
+    readSheet(tab, 'formula')
+  ])
+
+  // Pre-index local photo files so we can fall back when Drive uploads have
+  // failed and the Photo cell in Sheet1 is empty.
+  const localPhotos = buildLocalPhotoIndex()
+
   const out = []
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i]
-    if (!r || !r[0]) continue
-    const ts = Date.parse(String(r[0]).includes('T') ? r[0] : String(r[0]).replace(' ', 'T'))
+  for (let i = 1; i < formatted.length; i++) {
+    const r = formatted[i]
+    const rf = formulas[i] || []
+    if (!r || r[0] === undefined || r[0] === '') continue
+    const ts = parseSheetTimestamp(r[0])
     if (!Number.isFinite(ts)) continue
-    const photoCell = r[4] || ''
+
+    // Photo URL: pull from the formula cell (=HYPERLINK("url","photo")).
+    const photoCell = rf[4] || ''
     let photoUrl = ''
-    const m = typeof photoCell === 'string' && photoCell.match(/HYPERLINK\("([^"]+)"/i)
-    if (m) photoUrl = m[1]
-    else if (typeof photoCell === 'string' && /^https?:\/\//i.test(photoCell)) photoUrl = photoCell
+    if (typeof photoCell === 'string') {
+      const m = photoCell.match(/HYPERLINK\("([^"]+)"/i)
+      if (m) photoUrl = m[1]
+      else if (/^https?:\/\//i.test(photoCell)) photoUrl = photoCell
+    }
+
+    const workerId = r[5] || null
+    // Local-disk fallback when the sheet doesn't carry a Drive URL.
+    const localPhoto = photoUrl ? null : findLocalPhoto(localPhotos, workerId, ts)
 
     const distance = parseFloat(r[6])
     const hours = parseFloat(r[8])
     out.push({
-      id: `${ts}_${r[5] || ''}`,
-      ts,
+      id: `${ts}_${workerId || ''}`,
+      ts,                           // best-effort epoch (server may have TZ skew); use as a fallback only
+      localTime: r[0],              // raw wall-clock string from the sheet, parsed by the client
       name: r[1] || 'Unknown',
       employeeId: r[2] || null,
       direction: String(r[3] || 'in').toLowerCase() === 'out' ? 'out' : 'in',
       photoUrl: photoUrl || null,
-      workerId: r[5] || null,
+      photo: localPhoto || null,    // relative path on the Azure container, served via /data/*
+      workerId,
       distance: Number.isFinite(distance) ? distance : null,
       kind: (String(r[7] || '').toLowerCase() === 'employee') ? 'employee' : 'worker',
       hoursWorked: Number.isFinite(hours) ? hours : null
