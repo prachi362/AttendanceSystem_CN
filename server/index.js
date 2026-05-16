@@ -230,10 +230,21 @@ function findLocalPhoto(index, workerId, ts) {
   return best.rel
 }
 
+// In-process record of every punch we've accepted since the server started.
+// Keyed by worker id → { direction, ts }. We update this SYNCHRONOUSLY the
+// moment a punch is accepted, BEFORE the row is queued for Sheet1. Subsequent
+// punches consult this map first so they can't race the outbox: even if Sheet1
+// hasn't caught up yet, we still see the truth.
+const recentPunches = new Map()
+function rememberPunch(workerId, direction, ts) {
+  if (!workerId) return
+  recentPunches.set(workerId, { direction, ts })
+}
+
 // Read Sheet1 (the punch log) and return the most recent punch for a given
-// worker id. Used by the punch flow to derive the true current state without
-// depending on the worker registry's `currentState` cell — that cell can
-// become stale if a previous deploy killed an in-flight updateWorkerState.
+// worker id. Used as a fallback when the in-memory map doesn't have the worker
+// (e.g., right after a container restart) — the registry's `currentState` cell
+// can be stale if a previous deploy killed an in-flight updateWorkerState.
 // Returns { direction, ts } or null.
 async function lastPunchFromSheet(workerId) {
   if (!workerId || !syncEnabled()) return null
@@ -248,6 +259,18 @@ async function lastPunchFromSheet(workerId) {
     return { direction, ts: Number.isFinite(ts) ? ts : null }
   }
   return null
+}
+
+// Resolve the true latest punch for a worker. Prefers the in-process map (always
+// fresh) and falls back to Sheet1 only if we have no in-memory record yet. When
+// both exist, the one with the NEWER timestamp wins — this protects against
+// the outbox racing the next punch attempt.
+async function resolveLastPunch(workerId) {
+  const mem = recentPunches.get(workerId) || null
+  let sheet = null
+  try { sheet = await lastPunchFromSheet(workerId) } catch {}
+  if (mem && sheet) return mem.ts >= (sheet.ts || 0) ? mem : sheet
+  return mem || sheet || null
 }
 
 // Parse Sheet1 into the punch shape the dashboard expects.
@@ -394,6 +417,9 @@ app.post('/api/punches', async (req, res) => {
   }
   writeDB(db)
 
+  // In-process source of truth for the next punch's cooldown check.
+  rememberPunch(workerId, direction, ts)
+
   // Sync the worker's new state back to the Workers tab in Sheets (best-effort).
   if (worker) {
     updateWorkerState(worker.id, direction, ts).catch(e =>
@@ -460,13 +486,13 @@ app.post('/api/recognize-and-punch', async (req, res) => {
     let prevState = worker.currentState || 'out'
     let prevPunchTs = worker.lastPunchTs || null
     try {
-      const last = await lastPunchFromSheet(worker.id)
+      const last = await resolveLastPunch(worker.id)
       if (last) {
         prevState = last.direction
         prevPunchTs = last.ts
       }
     } catch (e) {
-      console.warn('[recognize-and-punch] could not read last punch from sheet, using cached state:', e.message)
+      console.warn('[recognize-and-punch] could not resolve last punch, using cached state:', e.message)
     }
 
     const direction = (requestedDirection === 'in' || requestedDirection === 'out')
@@ -529,6 +555,10 @@ app.post('/api/recognize-and-punch', async (req, res) => {
     match.worker.lastPunchTs = ts
     db.punches.push(punch)
     writeDB(db)
+
+    // In-process source of truth — wins over Sheet1 if the outbox hasn't
+    // flushed yet by the time the next punch arrives.
+    rememberPunch(worker.id, direction, ts)
 
     // Update the worker's state on the Google Sheet SYNCHRONOUSLY so the
     // change can't be lost if the container restarts (e.g., a deploy lands
