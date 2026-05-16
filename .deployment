@@ -1,0 +1,3 @@
+[config]
+# Azure App Service: use Oryx build to install deps + build the SPA + start.
+SCM_DO_BUILD_DURING_DEPLOYMENT=true

@@ -30,6 +30,10 @@ export const api = {
   createWorker: (payload) => j('POST', '/api/workers', payload),
   listPunches: (limit = 200) => j('GET', `/api/punches?limit=${limit}`),
   createPunch: (workerId, name, photo, distance, direction) =>
-    j('POST', '/api/punches', { workerId, name, photo, distance, direction }),
+    j('POST', '/api/punches', { workerId, name, photo, distance, direction, localTime: formatLocal(new Date()) }),
+  // Server-side recognition + punch in one call.
+  // Browser only captures the JPEG; server extracts descriptor, matches, records.
+  recognizeAndPunch: (photo, direction) =>
+    j('POST', '/api/recognize-and-punch', { photo, direction, localTime: formatLocal(new Date()) }),
   stats: () => j('GET', '/api/stats')
 }

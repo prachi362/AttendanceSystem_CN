@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { initOutbox, enqueuePunch, outboxStatus } from './sync/outbox.js'
 import { initWorkerStore, listWorkers as storeListWorkers, createWorker as storeCreateWorker, updateWorkerState } from './store/workers.js'
 import { syncEnabled, readSheet } from './sync/google.js'
+import { descriptorFromImage, loadModels } from './face/recognition.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -94,6 +95,27 @@ app.post('/api/workers', async (req, res) => {
     saved[pose] = `data/workers/${folderName}/${filename}`
   }
 
+  // If the client did not pre-compute descriptors, extract them server-side
+  // (only works when tfjs-node is installed — silently no-ops otherwise).
+  let finalDescriptors = Array.isArray(descriptors)
+    ? descriptors.filter(d => Array.isArray(d) && d.length)
+    : null
+  if ((!finalDescriptors || !finalDescriptors.length) && photos) {
+    finalDescriptors = []
+    for (const pose of ['front', 'left', 'right']) {
+      if (!photos[pose]) continue
+      try {
+        const d = await descriptorFromImage(photos[pose])
+        if (d) finalDescriptors.push(d)
+      } catch (e) {
+        // tfjs-node missing locally — skip silently. Client should send descriptors.
+        if (e.message?.includes('tfjs-node') || e.code === 'ERR_MODULE_NOT_FOUND') break
+        console.warn(`[register] descriptor for ${pose} failed:`, e.message)
+      }
+    }
+    if (!finalDescriptors.length) finalDescriptors = null
+  }
+
   const worker = {
     id,
     name: String(name).trim(),
@@ -102,8 +124,8 @@ app.post('/api/workers', async (req, res) => {
     folder: `data/workers/${folderName}`,
     thumb: saved.front || null,
     photos: saved,
-    descriptor: Array.isArray(descriptor) ? descriptor : null,
-    descriptors: Array.isArray(descriptors) ? descriptors.filter(d => Array.isArray(d) && d.length) : null,
+    descriptor: Array.isArray(descriptor) ? descriptor : (finalDescriptors?.[0] || null),
+    descriptors: finalDescriptors,
     currentState: 'out',
     lastPunchTs: null,
     deactivated: false
@@ -125,10 +147,10 @@ app.get('/api/punches', (req, res) => {
   res.json(list)
 })
 
-// Cooldown: a worker must wait at least 30 minutes between successive punches.
-// This both prevents accidental double-taps AND enforces the "punched-in for
-// real" workflow: tap once to clock in, then ≥30 min later tap to clock out.
-const PUNCH_COOLDOWN_MS = 30 * 60 * 1000
+// Cooldown: debounce accidental double-taps of the SAME action. A worker can
+// always switch direction (in → out, or out → in) immediately; the cooldown
+// only blocks repeating the same direction within this window.
+const PUNCH_COOLDOWN_MS = 30 * 1000
 
 app.post('/api/punches', async (req, res) => {
   const { workerId, name, photo, distance, direction: requestedDirection, localTime } = req.body || {}
@@ -139,12 +161,19 @@ app.post('/api/punches', async (req, res) => {
   const db = readDB()
   const worker = db.workers.find(w => w.id === workerId)
 
-  // Debounce: if same worker punched within cooldown, refuse.
-  if (worker && worker.lastPunchTs && (ts - worker.lastPunchTs) < PUNCH_COOLDOWN_MS) {
+  // Determine the punch direction first so we can compare with the previous one.
+  const prevState = worker?.currentState || 'out'
+  const direction = (requestedDirection === 'in' || requestedDirection === 'out')
+    ? requestedDirection
+    : (prevState === 'in' ? 'out' : 'in')
+
+  // Debounce only repeated same-direction punches within the cooldown window.
+  if (worker && worker.lastPunchTs && worker.currentState === direction
+      && (ts - worker.lastPunchTs) < PUNCH_COOLDOWN_MS) {
     return res.status(429).json({
       error: 'cooldown',
       lastPunchTs: worker.lastPunchTs,
-      lastDirection: worker.currentState || 'in',
+      lastDirection: worker.currentState,
       retryAfterMs: PUNCH_COOLDOWN_MS - (ts - worker.lastPunchTs)
     })
   }
@@ -154,13 +183,6 @@ app.post('/api/punches', async (req, res) => {
   const filename = `${ts}_${safe(workerId || 'unknown')}.jpg`
   const rel = `data/punches/${dateFolder(ts)}/${filename}`
   fs.writeFileSync(path.join(dayFolder, filename), buf)
-
-  // Honor explicit direction from the client (separate Punch In / Punch Out buttons).
-  // Fall back to toggling off the worker's current state for backward compat.
-  const prevState = worker?.currentState || 'out'
-  const direction = (requestedDirection === 'in' || requestedDirection === 'out')
-    ? requestedDirection
-    : (prevState === 'in' ? 'out' : 'in')
 
   const punch = {
     id: uid(),
@@ -193,6 +215,123 @@ app.post('/api/punches', async (req, res) => {
   try { enqueuePunch(punch) } catch (e) { console.warn('[sync] enqueue failed:', e.message) }
 
   res.json({ ok: true, punch })
+})
+
+// --- Recognize + punch in one call (server-side face processing) -----------
+//
+// The browser captures a JPEG and POSTs it here. We:
+//   1. Extract the descriptor on the CPU (no browser-WebGL load)
+//   2. Match against all workers
+//   3. If matched, record the punch (same logic as POST /api/punches)
+//
+// This is the path the kiosk should use; it removes ~2s of browser freeze
+// per punch and works on weak hardware.
+app.post('/api/recognize-and-punch', async (req, res) => {
+  const t0 = Date.now()
+  const { photo, direction: requestedDirection, localTime } = req.body || {}
+  const buf = dataUrlToBuffer(photo)
+  if (!buf) return res.status(400).json({ error: 'photo (data URL) required' })
+
+  try {
+    // 1. Workers + recognition in parallel.
+    const workersPromise = storeListWorkers()
+    let descriptor = null
+    try {
+      descriptor = await descriptorFromImage(buf)
+    } catch (e) {
+      // tfjs-node not installed (local macOS dev). Tell the client to fall back.
+      if (e.message?.includes('tfjs-node') || e.code === 'ERR_MODULE_NOT_FOUND') {
+        return res.status(503).json({ error: 'server_recognition_unavailable' })
+      }
+      throw e
+    }
+    const workers = await workersPromise
+
+    if (!descriptor) {
+      return res.json({ ok: false, reason: 'no_face', tookMs: Date.now() - t0 })
+    }
+
+    const { bestMatch } = await import('./face/recognition.js')
+    const match = bestMatch(workers, descriptor, 0.60)
+    void match // for readability below
+    if (!match) {
+      return res.json({ ok: false, reason: 'unknown', tookMs: Date.now() - t0 })
+    }
+
+    // 2. Punch flow — identical to POST /api/punches but already have the worker.
+    const ts = Date.now()
+    const db = readDB()
+    const worker = db.workers.find(w => w.id === match.worker.id) || match.worker
+
+    const prevState = worker.currentState || 'out'
+    const direction = (requestedDirection === 'in' || requestedDirection === 'out')
+      ? requestedDirection
+      : (prevState === 'in' ? 'out' : 'in')
+
+    // Debounce only repeated same-direction punches; opposite direction is allowed immediately.
+    if (worker.lastPunchTs && worker.currentState === direction
+        && (ts - worker.lastPunchTs) < PUNCH_COOLDOWN_MS) {
+      return res.status(429).json({
+        error: 'cooldown',
+        lastPunchTs: worker.lastPunchTs,
+        lastDirection: worker.currentState,
+        retryAfterMs: PUNCH_COOLDOWN_MS - (ts - worker.lastPunchTs),
+        worker: { id: worker.id, name: worker.name }
+      })
+    }
+
+    // Save the punch photo locally.
+    const dayFolder = path.join(PUNCHES_DIR, dateFolder(ts))
+    fs.mkdirSync(dayFolder, { recursive: true })
+    const filename = `${ts}_${safe(worker.id)}.jpg`
+    const rel = `data/punches/${dateFolder(ts)}/${filename}`
+    fs.writeFileSync(path.join(dayFolder, filename), buf)
+
+    const punch = {
+      id: uid(),
+      workerId: worker.id,
+      employeeId: worker.employeeId || null,
+      name: worker.name || 'Unknown',
+      direction,
+      ts,
+      localTime: localTime || null,
+      photo: rel,
+      photoAbs: path.join(dayFolder, filename),
+      distance: match.distance,
+      sizeBytes: buf.length
+    }
+
+    // Update local cache.
+    const localWorker = db.workers.find(w => w.id === worker.id)
+    if (localWorker) {
+      localWorker.currentState = direction
+      localWorker.lastPunchTs = ts
+    }
+    db.punches.push(punch)
+    writeDB(db)
+
+    // Background syncs.
+    updateWorkerState(worker.id, direction, ts).catch(e =>
+      console.warn('[store] updateWorkerState bg failed:', e.message))
+    try { enqueuePunch(punch) } catch (e) { console.warn('[sync] enqueue failed:', e.message) }
+
+    return res.json({
+      ok: true,
+      worker: { id: worker.id, name: worker.name, employeeId: worker.employeeId, thumb: worker.thumb || '' },
+      direction,
+      distance: match.distance,
+      tookMs: Date.now() - t0
+    })
+  } catch (e) {
+    console.error('[recognize-and-punch]', e)
+    res.status(500).json({ error: 'server_error', message: e.message })
+  }
+})
+
+// Warmup endpoint — call this from a cron to keep models in memory.
+app.get('/api/face/warm', async (_req, res) => {
+  try { await loadModels(); res.json({ ok: true }) }
+  catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // --- Static: serve saved images so the frontend can display them ----------
@@ -262,10 +401,30 @@ app.get('/api/stats', async (_req, res) => {
 // --- Sync status (for debugging) ------------------------------------------
 app.get('/api/sync/status', (_req, res) => res.json(outboxStatus()))
 
+// --- Serve the built frontend in production -------------------------------
+// In dev, Vite serves the SPA on a separate port. On Azure (production), this
+// process serves both the API and the built static files from dist/.
+if (process.env.NODE_ENV === 'production' || process.env.SERVE_STATIC === '1') {
+  const DIST = path.join(ROOT, 'dist')
+  if (fs.existsSync(DIST)) {
+    app.use(express.static(DIST))
+    // SPA fallback — any non-API GET serves index.html.
+    app.get(/^\/(?!api\/|data\/).*/, (_req, res) => res.sendFile(path.join(DIST, 'index.html')))
+    console.log(`[attendance] serving frontend from ${DIST}`)
+  } else {
+    console.warn('[attendance] NODE_ENV=production but dist/ not found — run `npm run build` first')
+  }
+}
+
 const PORT = process.env.PORT || 5174
 app.listen(PORT, async () => {
   console.log(`[attendance] api+data on http://localhost:${PORT}`)
   console.log(`[attendance] data dir: ${DATA_DIR}`)
   initOutbox({ dataDir: DATA_DIR })
   await initWorkerStore({ dataDir: DATA_DIR })
+  // Pre-warm the face-recognition models so the first punch isn't slow.
+  // Silently skip when tfjs-node isn't installed (local macOS dev).
+  loadModels()
+    .then(() => console.log('[face/server] ready'))
+    .catch(e => console.log('[face/server] disabled —', e.message.split('\n')[0]))
 })

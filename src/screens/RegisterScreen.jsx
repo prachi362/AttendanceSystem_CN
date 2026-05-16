@@ -4,7 +4,7 @@ import CameraView from '../components/CameraView.jsx'
 import Confetti from '../components/Confetti.jsx'
 import { useCountdown, CountdownBadge } from '../components/Countdown.jsx'
 import { captureCompressedJpeg } from '../utils/image.js'
-import { bestDescriptor, bestMatch } from '../utils/face.js'
+import { bestDescriptor } from '../utils/face.js'
 import { api } from '../utils/api.js'
 
 const STEPS = ['front', 'left', 'right']
@@ -18,12 +18,12 @@ export default function RegisterScreen({ t, onDone, onBack, onPunched }) {
   const [empId, setEmpId] = useState('')
   const [stepIdx, setStepIdx] = useState(0)
   const [photos, setPhotos] = useState({})
-  const descriptorsRef = useRef([])
   const [camReady, setCamReady] = useState(false)
   const [flash, setFlash] = useState(false)
   const [announcing, setAnnouncing] = useState(true)
   const [savedWorker, setSavedWorker] = useState(null)
   const [existingWorkers, setExistingWorkers] = useState([])
+  const descriptorsRef = useRef([])
 
   const stepKey = STEPS[stepIdx]
   const poseLabel = t[`pose_${stepKey}`]
@@ -46,21 +46,13 @@ export default function RegisterScreen({ t, onDone, onBack, onPunched }) {
     const next = { ...photos, [stepKey]: data }
     setPhotos(next)
 
-    let d = null
-    try { d = await bestDescriptor({ video, dataUrl: data }) } catch {}
-    if (d) descriptorsRef.current.push(d)
-
-    // Duplicate check on the first (front) pose only — if matches existing, punch them instead.
-    if (stepIdx === 0 && d) {
-      const match = bestMatch(existingWorkers, d, 0.5)
-      if (match) {
-        setStage('duplicate')
-        setSavedWorker(match.worker)
-        try { await api.createPunch(match.worker.id, match.worker.name, data) } catch {}
-        setTimeout(() => { onPunched ? onPunched() : onDone() }, 2600)
-        return
-      }
-    }
+    // Pre-compute descriptor in the browser as a fallback. Server prefers
+    // these if provided; if missing it computes its own (when tfjs-node is
+    // available — Azure deployment).
+    try {
+      const d = await bestDescriptor({ video, dataUrl: data })
+      if (d) descriptorsRef.current.push(d)
+    } catch (e) { /* ignore — server will handle */ }
 
     if (stepIdx + 1 < STEPS.length) {
       setTimeout(() => setStepIdx(stepIdx + 1), 300)

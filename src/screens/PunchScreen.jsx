@@ -3,7 +3,7 @@ import { ArrowLeft, UserPlus, ScanFace } from 'lucide-react'
 import CameraView from '../components/CameraView.jsx'
 import Confetti from '../components/Confetti.jsx'
 import { captureCompressedJpeg } from '../utils/image.js'
-import { bestDescriptor, bestMatch, detectFace } from '../utils/face.js'
+import { detectFace, bestDescriptor, bestMatch } from '../utils/face.js'
 import { api } from '../utils/api.js'
 
 export default function PunchScreen({ t, direction: requestedDir = null, onDone, onBack, onRegister }) {
@@ -13,8 +13,6 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
   const [photo, setPhoto] = useState(null)
   const [worker, setWorker] = useState(null)
   const [resultDirection, setResultDirection] = useState(requestedDir || 'in')
-  const [workers, setWorkers] = useState([])
-  const [workersLoaded, setWorkersLoaded] = useState(false)
   const [camReady, setCamReady] = useState(false)
   const [flash, setFlash] = useState(false)
   const [faceLocked, setFaceLocked] = useState(false)
@@ -22,18 +20,13 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
   // Guard to ensure capture() only fires once per session.
   const capturingRef = useRef(false)
 
-  useEffect(() => {
-    api.listWorkers()
-      .then(ws => { setWorkers(ws); setWorkersLoaded(true) })
-      .catch(() => { setWorkers([]); setWorkersLoaded(true) })
-  }, [])
-
   // Live detection loop: as soon as a face is detected in the live preview,
   // immediately fire capture(). Polls at ~5 fps with TinyFaceDetector (cheap).
+  // All heavy work (descriptor extraction + matching) happens on the server.
   useEffect(() => {
-    if (stage !== 'capture' || !camReady || !workersLoaded) return
+    if (stage !== 'capture' || !camReady) return
     let cancelled = false
-    let consecutive = 0  // require 2 in a row to reduce false triggers on flicker
+    let consecutive = 0
 
     async function tick() {
       if (cancelled || capturingRef.current) return
@@ -58,7 +51,7 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
     }
     tick()
     return () => { cancelled = true }
-  }, [stage, camReady, workersLoaded])
+  }, [stage, camReady])
 
   async function capture() {
     const video = camRef.current?.getVideo()
@@ -68,58 +61,63 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
     setPhoto(data)
     setStage('identifying')
 
-    // Sample up to 4 frames over ~1.2s using the SAME detector that registration
-    // used (SSD MobileNet). Using a different detector here gives subtly different
-    // face crops, which throws off matching even for the correct person.
-    const THRESHOLD = 0.60
-    const ATTEMPTS = 4
-    const INTERVAL = 300
-
-    let bestSoFar = null
+    // Try server-side recognition first. If the server returns 503
+    // (tfjs-node not installed — e.g., local macOS dev), fall back to
+    // browser-side recognition so dev still works.
     try {
-      const d0 = await bestDescriptor({ video, dataUrl: data })
-      if (d0) {
-        const m = bestMatch(workers, d0, 1.0)
-        if (m && (!bestSoFar || m.distance < bestSoFar.distance)) bestSoFar = m
+      const r = await api.recognizeAndPunch(data, requestedDir)
+      console.log('[punch] server response:', r)
+
+      if (r.ok) {
+        setWorker(r.worker)
+        setResultDirection(r.direction || requestedDir || 'in')
+        setStage('success')
+        setTimeout(onDone, 3000)
+        return
       }
-
-      for (let i = 1; i < ATTEMPTS; i++) {
-        await new Promise(r => setTimeout(r, INTERVAL))
-        const v = camRef.current?.getVideo()
-        if (!v) continue
-        const d = await bestDescriptor({ video: v })
-        if (!d) continue
-        const m = bestMatch(workers, d, 1.0)
-        if (m && (!bestSoFar || m.distance < bestSoFar.distance)) bestSoFar = m
-        if (bestSoFar && bestSoFar.distance < 0.40) break  // confident — stop early
-      }
-    } catch (e) {
-      console.warn('[punch] descriptor error:', e)
-    }
-
-    console.log('[punch] candidates:', workers.length, '— best match:', bestSoFar
-      ? { name: bestSoFar.worker.name, distance: bestSoFar.distance.toFixed(4) }
-      : null)
-
-    if (!bestSoFar || bestSoFar.distance > THRESHOLD) {
       setStage('unknown')
-      return
+    } catch (e) {
+      if (e.status === 503) {
+        // Server can't do face recognition — fall back to browser path.
+        await browserSideFallback(data, video)
+      } else if (e.status === 429) {
+        setWorker(e.body?.worker || { name: 'Worker' })
+        setResultDirection(e.body?.lastDirection || requestedDir || 'in')
+        setStage('cooldown')
+        setTimeout(onDone, 2800)
+      } else {
+        console.warn('[punch] error:', e)
+        setStage('unknown')
+      }
     }
+  }
 
-    const match = bestSoFar
+  // Browser-side fallback: extract descriptor, match against workers list,
+  // then call the regular /api/punches endpoint.
+  async function browserSideFallback(data, video) {
+    console.log('[punch] server unavailable — using browser fallback')
     try {
-      const r = await api.createPunch(match.worker.id, match.worker.name, data, match.distance, requestedDir)
+      const workers = await api.listWorkers()
+      const d = await bestDescriptor({ video, dataUrl: data })
+      if (!d) { setStage('unknown'); return }
+      const match = bestMatch(workers, d, 0.60)
+      if (!match) { setStage('unknown'); return }
+
+      const r = await api.createPunch(
+        match.worker.id, match.worker.name, data, match.distance, requestedDir
+      )
       setWorker(match.worker)
-      setResultDirection(r.punch?.direction || requestedDir)
+      setResultDirection(r.punch?.direction || requestedDir || 'in')
       setStage('success')
       setTimeout(onDone, 3000)
     } catch (e) {
       if (e.status === 429) {
-        setWorker(match.worker)
-        setResultDirection(e.body?.lastDirection || requestedDir)
+        setWorker(e.body?.worker || { name: 'Worker' })
+        setResultDirection(e.body?.lastDirection || requestedDir || 'in')
         setStage('cooldown')
         setTimeout(onDone, 2800)
       } else {
+        console.warn('[punch/fallback] error:', e)
         setStage('unknown')
       }
     }

@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "api/recognize-and-punch.js": {
+      "maxDuration": 30,
+      "memory": 1024
+    },
+    "api/workers.js": {
+      "maxDuration": 30,
+      "memory": 1024
+    }
+  }
+}
