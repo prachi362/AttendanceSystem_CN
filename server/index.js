@@ -492,9 +492,14 @@ app.post('/api/recognize-and-punch', async (req, res) => {
     db.punches.push(punch)
     writeDB(db)
 
-    // Background sync to Google Sheets (authoritative store).
-    updateWorkerState(worker.id, direction, ts).catch(e =>
-      console.warn('[store] updateWorkerState bg failed:', e.message))
+    // Update the worker's state on the Google Sheet SYNCHRONOUSLY so the
+    // change can't be lost if the container restarts (e.g., a deploy lands
+    // mid-request). The latency cost is small compared to face recognition.
+    try {
+      await updateWorkerState(worker.id, direction, ts)
+    } catch (e) {
+      console.warn('[store] updateWorkerState failed (state may be stale):', e.message)
+    }
     try { enqueuePunch(punch) } catch (e) { console.warn('[sync] enqueue failed:', e.message) }
 
     return res.json({
@@ -532,9 +537,12 @@ app.get('/api/stats', async (_req, res) => {
 
     if (syncEnabled()) {
       const workers = await storeListWorkers()
-      const clockedIn = workers.filter(w => w.currentState === 'in').length
 
-      // Pull punch log from Sheet1 (header row + data rows).
+      // Pull punch log from Sheet1 (header row + data rows). Sheet1 is the
+      // authoritative record of every check-in/out, so derive `clockedIn`
+      // from the last punch direction per worker rather than from the
+      // per-worker `currentState` column (which can lag if an async sheet
+      // update was lost during a container restart).
       let punchRows = []
       try {
         const tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1'
@@ -543,6 +551,15 @@ app.get('/api/stats', async (_req, res) => {
       } catch (e) {
         console.warn('[api/stats] could not read punch sheet:', e.message)
       }
+
+      // Walk chronologically; last entry per workerId wins.
+      const lastDirByWorker = new Map()
+      for (const r of punchRows) {
+        const wid = r[5]
+        const dir = String(r[3] || '').toLowerCase()
+        if (wid) lastDirByWorker.set(wid, dir === 'out' ? 'out' : 'in')
+      }
+      const clockedIn = [...lastDirByWorker.values()].filter(d => d === 'in').length
 
       const todayPunches = punchRows.filter(r => {
         const ts = Date.parse(r[0])
