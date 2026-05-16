@@ -6,10 +6,11 @@ html, body, #root { height: 100%; }
 body {
   font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  color: #e2e8f0;
   background:
-    radial-gradient(1200px 800px at 10% -10%, #cdedf9 0%, transparent 60%),
-    radial-gradient(1000px 700px at 110% 110%, #e6f6fc 0%, transparent 60%),
-    #f1f5f9;
+    radial-gradient(1200px 800px at 10% -10%, rgba(27, 166, 214, 0.25) 0%, transparent 60%),
+    radial-gradient(1000px 700px at 110% 110%, rgba(10, 120, 160, 0.30) 0%, transparent 60%),
+    linear-gradient(180deg, #0a1628 0%, #0f1f38 100%);
   letter-spacing: -0.01em;
 }
 
@@ -19,17 +20,17 @@ body {
   aspect-ratio: 3 / 4;
   max-height: 100vh;
   margin: 0 auto;
-  background: rgba(255,255,255,0.85);
+  background: linear-gradient(180deg, rgba(20, 39, 71, 0.85) 0%, rgba(15, 31, 56, 0.92) 100%);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.6);
+  border: 1px solid rgba(92, 200, 240, 0.18);
   box-shadow:
-    0 1px 0 rgba(255,255,255,0.8) inset,
-    0 30px 80px -20px rgba(15, 149, 196, 0.25),
-    0 10px 40px -10px rgba(0,0,0,0.15);
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 30px 80px -20px rgba(0, 0, 0, 0.55),
+    0 10px 40px -10px rgba(15, 149, 196, 0.25);
 }
 
 .btn-big {
@@ -39,15 +40,18 @@ body {
 
 /* Big kiosk-friendly input */
 .input {
-  @apply w-full rounded-2xl border-2 border-slate-200 bg-white px-6 py-5 text-2xl text-center text-slate-900;
+  @apply w-full rounded-2xl border-2 px-6 py-5 text-2xl text-center;
+  background: rgba(10, 22, 40, 0.55);
+  border-color: rgba(92, 200, 240, 0.20);
+  color: #f1f5f9;
   letter-spacing: -0.01em;
   transition: border-color 200ms cubic-bezier(0.2,0.7,0.2,1), box-shadow 200ms cubic-bezier(0.2,0.7,0.2,1);
   outline: none;
 }
-.input::placeholder { color: rgb(148 163 184); }
+.input::placeholder { color: rgba(148, 163, 184, 0.7); }
 .input:focus {
-  border-color: #1ba6d6;
-  box-shadow: 0 0 0 4px rgba(27, 166, 214, 0.15);
+  border-color: #5cc8f0;
+  box-shadow: 0 0 0 4px rgba(27, 166, 214, 0.20);
 }
 
 .btn-primary {
@@ -86,13 +90,19 @@ body {
 }
 
 .btn-ghost {
-  @apply bg-white/70 text-slate-800 border border-slate-200;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  border: 1px solid rgba(92, 200, 240, 0.25);
   backdrop-filter: blur(8px);
 }
+.btn-ghost:hover { background: rgba(255, 255, 255, 0.10); }
 
 .card {
-  @apply rounded-3xl border border-white/60 bg-white/70 backdrop-blur;
-  box-shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.15);
+  @apply rounded-3xl backdrop-blur;
+  background: rgba(20, 39, 71, 0.55);
+  border: 1px solid rgba(92, 200, 240, 0.18);
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.45);
+  color: #e2e8f0;
 }
 
 .fade-in { animation: fadeIn 250ms ease-out both; }
@@ -113,3 +123,18 @@ body {
 /* Hide scrollbars in lists for kiosk feel */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }
+
+/* --- Dark-theme remap: keep existing JSX classes working on the navy frame --- */
+.kiosk-frame .text-slate-900 { color: #f1f5f9; }
+.kiosk-frame .text-slate-800 { color: #e2e8f0; }
+.kiosk-frame .text-slate-700 { color: #cbd5e1; }
+.kiosk-frame .text-slate-600 { color: #94a3b8; }
+.kiosk-frame .text-slate-500 { color: #94a3b8; }
+.kiosk-frame .text-slate-400 { color: #64748b; }
+.kiosk-frame .border-slate-200,
+.kiosk-frame .border-slate-100 { border-color: rgba(92, 200, 240, 0.18); }
+.kiosk-frame .bg-white,
+.kiosk-frame .bg-white\/95,
+.kiosk-frame .bg-white\/80,
+.kiosk-frame .bg-white\/70 { background-color: rgba(20, 39, 71, 0.85); }
+.kiosk-frame .hover\:bg-slate-50:hover { background-color: rgba(255, 255, 255, 0.06); }
