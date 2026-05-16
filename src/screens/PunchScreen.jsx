@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, UserPlus, ScanFace } from 'lucide-react'
+import { ArrowLeft, UserPlus, ScanFace, Clock, Check } from 'lucide-react'
 import CameraView from '../components/CameraView.jsx'
 import Confetti from '../components/Confetti.jsx'
 import { captureCompressedJpeg } from '../utils/image.js'
@@ -21,30 +21,42 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
   // Guard to ensure capture() only fires once per session.
   const capturingRef = useRef(false)
 
-  // Live detection loop: as soon as a face is detected in the live preview,
-  // immediately fire capture(). Polls at ~5 fps with TinyFaceDetector (cheap).
-  // All heavy work (descriptor extraction + matching) happens on the server.
+  // Live detection loop: wait for the user to settle in front of the camera
+  // before capturing. We require:
+  //   - a short warm-up after the stream becomes ready (lets the user frame)
+  //   - several consecutive frames with a confident, sufficiently-large face
+  //     (small/distant faces give bad descriptors)
+  // Polls at ~5 fps with TinyFaceDetector (cheap on the client).
   useEffect(() => {
     if (stage !== 'capture' || !camReady) return
     let cancelled = false
     let consecutive = 0
+    const WARMUP_MS = 1500            // give the user time to position
+    const REQUIRED_CONSECUTIVE = 4    // ~720ms of steady face
+    const MIN_FACE_FRAC = 0.22        // face box width >= 22% of frame width
+    const startedAt = Date.now()
 
     async function tick() {
       if (cancelled || capturingRef.current) return
       const v = camRef.current?.getVideo()
-      if (v) {
+      const elapsed = Date.now() - startedAt
+      if (v && elapsed >= WARMUP_MS) {
         try {
           const det = await detectFace(v)
-          if (det && det.score > 0.55) {
+          const vw = v.videoWidth || 1
+          const boxW = det?.box?.width || 0
+          const bigEnough = boxW / vw >= MIN_FACE_FRAC
+          if (det && det.score > 0.6 && bigEnough) {
             consecutive++
-            if (consecutive >= 2) {
+            if (consecutive === 1) setFaceLocked(true) // green outline = "hold still"
+            if (consecutive >= REQUIRED_CONSECUTIVE) {
               capturingRef.current = true
-              setFaceLocked(true)
               capture()
               return
             }
           } else {
             consecutive = 0
+            setFaceLocked(false)
           }
         } catch (e) { /* keep polling */ }
       }
@@ -84,9 +96,14 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
       } else if (e.status === 429) {
         setWorker(e.body?.worker || { name: 'Worker' })
         setResultDirection(e.body?.lastDirection || requestedDir || 'in')
-        setCooldownInfo({ reason: e.body?.reason, retryAfterMs: e.body?.retryAfterMs })
+        setCooldownInfo({
+          reason: e.body?.reason,
+          retryAfterMs: e.body?.retryAfterMs,
+          lastPunchTs: e.body?.lastPunchTs
+        })
         setStage('cooldown')
-        setTimeout(onDone, e.body?.reason === 'min_shift' ? 4200 : 2800)
+        // Give people time to actually read the message before going home.
+        setTimeout(onDone, e.body?.reason === 'min_shift' ? 7000 : 2800)
       } else {
         console.warn('[punch] error:', e)
         setStage('unknown')
@@ -116,9 +133,13 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
       if (e.status === 429) {
         setWorker(e.body?.worker || { name: 'Worker' })
         setResultDirection(e.body?.lastDirection || requestedDir || 'in')
-        setCooldownInfo({ reason: e.body?.reason, retryAfterMs: e.body?.retryAfterMs })
+        setCooldownInfo({
+          reason: e.body?.reason,
+          retryAfterMs: e.body?.retryAfterMs,
+          lastPunchTs: e.body?.lastPunchTs
+        })
         setStage('cooldown')
-        setTimeout(onDone, e.body?.reason === 'min_shift' ? 4200 : 2800)
+        setTimeout(onDone, e.body?.reason === 'min_shift' ? 7000 : 2800)
       } else {
         console.warn('[punch/fallback] error:', e)
         setStage('unknown')
@@ -138,20 +159,8 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
   }
 
   if (stage === 'cooldown' && worker) {
-    const isMinShift = cooldownInfo?.reason === 'min_shift'
-    const minutesLeft = cooldownInfo?.retryAfterMs
-      ? Math.max(1, Math.ceil(cooldownInfo.retryAfterMs / 60000))
-      : null
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-5 p-8 fade-in">
-        <div className="text-slate-900 text-2xl" style={{ fontWeight: 600 }}>{worker.name}</div>
-        <p className="text-slate-500 text-center max-w-sm">
-          {isMinShift ? t.minShiftBlocked : t.cooldown}
-        </p>
-        {isMinShift && minutesLeft && (
-          <p className="text-slate-400 text-sm tabular-nums">~{minutesLeft} min</p>
-        )}
-      </div>
+      <CooldownScreen t={t} worker={worker} info={cooldownInfo} />
     )
   }
 
@@ -208,6 +217,66 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
 
       {flash && (
         <div className="pointer-events-none absolute inset-0 bg-white/80 rounded-3xl" style={{ animation: 'flash 280ms ease-out' }} />
+      )}
+    </div>
+  )
+}
+
+// Shown when the server recognized the person but rejected the punch — either
+// because of the 30-second debounce or the 30-minute minimum shift rule.
+// Important: visually confirm "we did recognize you" so the user doesn't
+// think recognition failed.
+function CooldownScreen({ t, worker, info }) {
+  const isMinShift = info?.reason === 'min_shift'
+  const photoSrc = worker.thumb ? '/' + worker.thumb : null
+
+  // Live-tick the remaining time so the countdown feels accurate.
+  const target = info?.lastPunchTs ? info.lastPunchTs + 30 * 60 * 1000 : null
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!isMinShift) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [isMinShift])
+  const msLeft = target ? Math.max(0, target - now) : (info?.retryAfterMs || 0)
+  const mm = Math.floor(msLeft / 60000)
+  const ss = Math.floor((msLeft % 60000) / 1000)
+  const clock = `${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`
+
+  return (
+    <div className="flex-1 relative flex flex-col items-center justify-center gap-6 p-8 fade-in overflow-hidden">
+      {/* Photo with a green check badge — makes it obvious recognition worked. */}
+      <div className="relative">
+        {photoSrc ? (
+          <img
+            src={photoSrc}
+            alt={worker.name}
+            className="w-44 h-44 rounded-full object-cover ring-8 ring-amber-400"
+            style={{ boxShadow: '0 20px 50px -20px rgba(15,23,42,0.3)' }}
+            onError={(e) => { e.currentTarget.style.display = 'none' }}
+          />
+        ) : (
+          <div className="w-44 h-44 rounded-full bg-slate-100 ring-8 ring-amber-400 flex items-center justify-center text-5xl text-slate-400" style={{ fontWeight: 600 }}>
+            {worker.name?.[0]?.toUpperCase() || '?'}
+          </div>
+        )}
+        <div className="absolute -bottom-2 -right-2 bg-emerald-500 text-white rounded-full p-2 ring-4 ring-white">
+          <Check size={22} strokeWidth={3} />
+        </div>
+      </div>
+
+      <div className="text-3xl text-slate-900" style={{ fontWeight: 600 }}>{worker.name}</div>
+
+      {isMinShift ? (
+        <>
+          <div className="flex items-center gap-3 bg-amber-50 text-amber-700 px-5 py-3 rounded-2xl">
+            <Clock size={26} strokeWidth={2.2} />
+            <span className="text-3xl tabular-nums" style={{ fontWeight: 600 }}>{clock}</span>
+          </div>
+          <p className="text-slate-500 text-center max-w-sm">{t.minShiftBlocked}</p>
+        </>
+      ) : (
+        <p className="text-slate-500 text-center max-w-sm">{t.cooldown}</p>
       )}
     </div>
   )
