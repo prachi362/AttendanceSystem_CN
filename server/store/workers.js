@@ -1,9 +1,10 @@
-// Workers store. Source of truth = a "Workers" tab in the configured Google Sheet
-// (when sync is enabled). Falls back to local data/db.json otherwise.
+// Workers store. Source of truth = the configured Google Sheet (when sync is
+// enabled). Falls back to local data/db.json otherwise.
 //
-// Columns in the Workers tab:
+// People come in two kinds — "worker" and "employee" — and live in SEPARATE
+// tabs ("Workers" and "Employees"). Columns are identical in both tabs:
 //   A id | B name | C employeeId | D createdAt | E currentState | F lastPunchTs |
-//   G folder | H thumb | I descriptors (JSON of number[][])
+//   G folder | H thumb | I descriptors (JSON of number[][]) | J kind
 //
 // In-memory cache with a short TTL keeps recognition fast — the punch flow
 // hits this on every attempt, but we don't want to hammer the Sheets API.
@@ -12,8 +13,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { syncEnabled, readSheet, appendRow, updateRange, ensureTab } from '../sync/google.js'
 
-const TAB = 'Workers'
-const HEADERS = ['id','name','employeeId','createdAt','currentState','lastPunchTs','folder','thumb','descriptors']
+const TABS = { worker: 'Workers', employee: 'Employees' }
+const HEADERS = ['id','name','employeeId','createdAt','currentState','lastPunchTs','folder','thumb','descriptors','kind']
+function tabFor(kind) { return TABS[kind === 'employee' ? 'employee' : 'worker'] }
 const CACHE_TTL_MS = 30_000
 
 let DB_FILE = null
@@ -24,11 +26,13 @@ export async function initWorkerStore({ dataDir, stateless: isStateless = false 
   stateless = isStateless || !dataDir
   if (!stateless) DB_FILE = path.join(dataDir, 'db.json')
   if (syncEnabled()) {
-    try {
-      await ensureTab(TAB, HEADERS)
-      console.log(`[store] Workers tab ready in Google Sheet${stateless ? ' (stateless mode)' : ''}`)
-    } catch (e) {
-      console.warn('[store] ensureTab failed:', e.message)
+    for (const tab of Object.values(TABS)) {
+      try {
+        await ensureTab(tab, HEADERS)
+        console.log(`[store] ${tab} tab ready in Google Sheet${stateless ? ' (stateless mode)' : ''}`)
+      } catch (e) {
+        console.warn(`[store] ensureTab(${tab}) failed:`, e.message)
+      }
     }
   }
 }
@@ -45,9 +49,9 @@ function writeLocal(db) {
   catch (e) { console.warn('[store] writeLocal failed:', e.message) }
 }
 
-function rowToWorker(row) {
+function rowToWorker(row, kind) {
   // row is array; some cells may be undefined if blank trailing cells.
-  const [id, name, employeeId, createdAt, currentState, lastPunchTs, folder, thumb, descriptorsJson] = row
+  const [id, name, employeeId, createdAt, currentState, lastPunchTs, folder, thumb, descriptorsJson, rowKind] = row
   let descriptors = null
   try { if (descriptorsJson) descriptors = JSON.parse(descriptorsJson) } catch {}
   return {
@@ -61,6 +65,7 @@ function rowToWorker(row) {
     thumb: thumb || null,
     descriptor: Array.isArray(descriptors) && descriptors[0] ? descriptors[0] : null,
     descriptors: Array.isArray(descriptors) ? descriptors : null,
+    kind: (rowKind === 'employee' || kind === 'employee') ? 'employee' : 'worker',
     deactivated: false
   }
 }
@@ -70,7 +75,8 @@ function workerToRow(w) {
     w.id, w.name, w.employeeId || '', w.createdAt || '',
     w.currentState || 'out', w.lastPunchTs || '',
     w.folder || '', w.thumb || '',
-    JSON.stringify(w.descriptors || (w.descriptor ? [w.descriptor] : []))
+    JSON.stringify(w.descriptors || (w.descriptor ? [w.descriptor] : [])),
+    w.kind === 'employee' ? 'employee' : 'worker'
   ]
 }
 
@@ -80,14 +86,23 @@ export async function listWorkers({ force = false } = {}) {
   }
   if (!force && Date.now() - cache.at < CACHE_TTL_MS) return cache.rows
   try {
-    const rows = await readSheet(TAB)
-    // Skip header row (rows[0]). Filter rows that have at least an id.
-    const parsed = rows.slice(1).filter(r => r && r[0]).map(rowToWorker)
+    // Read both registry tabs in parallel and merge.
+    const results = await Promise.all(
+      Object.entries(TABS).map(async ([kind, tab]) => {
+        try {
+          const rows = await readSheet(tab)
+          return rows.slice(1).filter(r => r && r[0]).map(r => rowToWorker(r, kind))
+        } catch (e) {
+          console.warn(`[store] read ${tab} failed:`, e.message)
+          return []
+        }
+      })
+    )
+    const parsed = results.flat()
     cache = { rows: parsed, at: Date.now() }
     return parsed
   } catch (e) {
     console.warn('[store] listWorkers from Sheets failed, using local cache:', e.message)
-    // If sheet read fails (e.g. transient network), serve stale cache if any.
     if (cache.rows.length) return cache.rows
     return readLocal().workers.filter(w => !w.deactivated)
   }
@@ -102,7 +117,7 @@ export async function createWorker(w) {
   if (!syncEnabled()) return
 
   try {
-    await appendRow(workerToRow(w), TAB)
+    await appendRow(workerToRow(w), tabFor(w.kind))
     cache.at = 0 // invalidate
   } catch (e) {
     console.warn('[store] createWorker → Sheets failed (kept locally):', e.message)
@@ -124,16 +139,21 @@ export async function updateWorkerState(id, currentState, lastPunchTs) {
   if (!syncEnabled()) return
 
   try {
-    const rows = await readSheet(TAB)
-    // header at index 0; data starts at row 2 in sheet coords
-    const idx = rows.findIndex((r, i) => i > 0 && r[0] === id)
-    if (idx === -1) {
-      console.warn(`[store] updateWorkerState: worker ${id} not found in Sheets`)
-      return
+    // Search both tabs since the worker could be in either.
+    for (const tab of Object.values(TABS)) {
+      try {
+        const rows = await readSheet(tab)
+        const idx = rows.findIndex((r, i) => i > 0 && r[0] === id)
+        if (idx === -1) continue
+        const sheetRow = idx + 1 // 1-indexed
+        await updateRange(`${tab}!E${sheetRow}:F${sheetRow}`, [currentState, lastPunchTs])
+        cache.at = 0
+        return
+      } catch (e) {
+        console.warn(`[store] updateWorkerState scan ${tab}:`, e.message)
+      }
     }
-    const sheetRow = idx + 1 // 1-indexed
-    await updateRange(`${TAB}!E${sheetRow}:F${sheetRow}`, [currentState, lastPunchTs])
-    cache.at = 0
+    console.warn(`[store] updateWorkerState: worker ${id} not found in any tab`)
   } catch (e) {
     console.warn('[store] updateWorkerState failed:', e.message)
   }

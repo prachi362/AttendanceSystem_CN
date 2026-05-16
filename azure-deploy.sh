@@ -44,8 +44,12 @@ else
 fi
 
 echo "==> App Service plan $PLAN ($SKU, $LOC)"
-az appservice plan create -n "$PLAN" -g "$RG" --is-linux --sku "$SKU" \
-  --location "$LOC" --only-show-errors >/dev/null
+if ! az appservice plan show -n "$PLAN" -g "$RG" --only-show-errors >/dev/null 2>&1; then
+  az appservice plan create -n "$PLAN" -g "$RG" --is-linux --sku "$SKU" \
+    --location "$LOC" --only-show-errors >/dev/null
+else
+  echo "    (already exists, reusing)"
+fi
 
 echo "==> Web app $APP"
 if ! az webapp show -n "$APP" -g "$RG" --only-show-errors >/dev/null 2>&1; then

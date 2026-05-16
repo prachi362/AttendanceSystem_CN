@@ -13,6 +13,7 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
   const [photo, setPhoto] = useState(null)
   const [worker, setWorker] = useState(null)
   const [resultDirection, setResultDirection] = useState(requestedDir || 'in')
+  const [cooldownInfo, setCooldownInfo] = useState(null)
   const [camReady, setCamReady] = useState(false)
   const [flash, setFlash] = useState(false)
   const [faceLocked, setFaceLocked] = useState(false)
@@ -83,8 +84,9 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
       } else if (e.status === 429) {
         setWorker(e.body?.worker || { name: 'Worker' })
         setResultDirection(e.body?.lastDirection || requestedDir || 'in')
+        setCooldownInfo({ reason: e.body?.reason, retryAfterMs: e.body?.retryAfterMs })
         setStage('cooldown')
-        setTimeout(onDone, 2800)
+        setTimeout(onDone, e.body?.reason === 'min_shift' ? 4200 : 2800)
       } else {
         console.warn('[punch] error:', e)
         setStage('unknown')
@@ -114,8 +116,9 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
       if (e.status === 429) {
         setWorker(e.body?.worker || { name: 'Worker' })
         setResultDirection(e.body?.lastDirection || requestedDir || 'in')
+        setCooldownInfo({ reason: e.body?.reason, retryAfterMs: e.body?.retryAfterMs })
         setStage('cooldown')
-        setTimeout(onDone, 2800)
+        setTimeout(onDone, e.body?.reason === 'min_shift' ? 4200 : 2800)
       } else {
         console.warn('[punch/fallback] error:', e)
         setStage('unknown')
@@ -135,10 +138,19 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
   }
 
   if (stage === 'cooldown' && worker) {
+    const isMinShift = cooldownInfo?.reason === 'min_shift'
+    const minutesLeft = cooldownInfo?.retryAfterMs
+      ? Math.max(1, Math.ceil(cooldownInfo.retryAfterMs / 60000))
+      : null
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-5 p-8 fade-in">
         <div className="text-slate-900 text-2xl" style={{ fontWeight: 600 }}>{worker.name}</div>
-        <p className="text-slate-500 text-center max-w-sm">{t.cooldown}</p>
+        <p className="text-slate-500 text-center max-w-sm">
+          {isMinShift ? t.minShiftBlocked : t.cooldown}
+        </p>
+        {isMinShift && minutesLeft && (
+          <p className="text-slate-400 text-sm tabular-nums">~{minutesLeft} min</p>
+        )}
       </div>
     )
   }
@@ -202,6 +214,7 @@ export default function PunchScreen({ t, direction: requestedDir = null, onDone,
 }
 
 function SuccessScreen({ t, worker, direction }) {
+  // Show a small notice on a successful CHECK-IN that they can check out in 30 min.
   const isIn = direction === 'in'
   const photoSrc = worker.thumb ? '/' + worker.thumb : null
   const ringColor = isIn ? 'ring-emerald-500' : 'ring-blue-500'
@@ -231,6 +244,9 @@ function SuccessScreen({ t, worker, direction }) {
       <div className="text-center">
         <div className="text-3xl text-slate-900" style={{ fontWeight: 600 }}>{worker.name}</div>
         <div className="text-slate-500 mt-2 tabular-nums">{new Date().toLocaleTimeString()}</div>
+        {isIn && (
+          <div className="text-slate-400 text-sm mt-3">{t.minShiftNotice}</div>
+        )}
       </div>
     </div>
   )

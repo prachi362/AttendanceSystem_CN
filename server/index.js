@@ -77,10 +77,11 @@ app.get('/api/workers', async (_req, res) => {
 })
 
 app.post('/api/workers', async (req, res) => {
-  const { name, employeeId, photos, descriptor, descriptors } = req.body || {}
+  const { name, employeeId, photos, descriptor, descriptors, kind: rawKind } = req.body || {}
   if (!name || !photos || !photos.front) {
     return res.status(400).json({ error: 'name and photos.front are required' })
   }
+  const kind = rawKind === 'employee' ? 'employee' : 'worker'
   const id = uid()
   const folderName = `${id}_${safe(name)}`
   const folder = path.join(WORKERS_DIR, folderName)
@@ -120,6 +121,7 @@ app.post('/api/workers', async (req, res) => {
     id,
     name: String(name).trim(),
     employeeId: employeeId ? String(employeeId).trim() : null,
+    kind,
     createdAt: Date.now(),
     folder: `data/workers/${folderName}`,
     thumb: saved.front || null,
@@ -135,7 +137,7 @@ app.post('/api/workers', async (req, res) => {
   } catch (e) {
     console.error('[api/workers POST]', e)
   }
-  res.json({ ok: true, worker: { id: worker.id, name: worker.name, employeeId: worker.employeeId, folder: worker.folder, thumb: worker.thumb } })
+  res.json({ ok: true, worker: { id: worker.id, name: worker.name, kind: worker.kind, employeeId: worker.employeeId, folder: worker.folder, thumb: worker.thumb } })
 })
 
 // --- Punches ---------------------------------------------------------------
@@ -147,10 +149,28 @@ app.get('/api/punches', (req, res) => {
   res.json(list)
 })
 
-// Cooldown: debounce accidental double-taps of the SAME action. A worker can
-// always switch direction (in → out, or out → in) immediately; the cooldown
-// only blocks repeating the same direction within this window.
-const PUNCH_COOLDOWN_MS = 30 * 1000
+// Punch policy:
+//   - DEBOUNCE: same direction within 30 s = ignored (accidental double tap)
+//   - MIN_SHIFT: after a CHECK-IN you must wait 30 min before you can CHECK-OUT
+//   - check-OUT → check-IN is always allowed immediately (worker can rejoin)
+const DEBOUNCE_MS  = 30 * 1000
+const MIN_SHIFT_MS = 30 * 60 * 1000
+
+// Decide whether a new punch should be rejected. Returns null if allowed,
+// otherwise an object describing the cooldown reason for the API response.
+function cooldownReason(worker, ts, direction) {
+  if (!worker || !worker.lastPunchTs) return null
+  const since = ts - worker.lastPunchTs
+  // Same direction within debounce window → ignore double-tap.
+  if (worker.currentState === direction && since < DEBOUNCE_MS) {
+    return { kind: 'debounce', retryAfterMs: DEBOUNCE_MS - since }
+  }
+  // Trying to check OUT before the 30-minute minimum shift has elapsed.
+  if (worker.currentState === 'in' && direction === 'out' && since < MIN_SHIFT_MS) {
+    return { kind: 'min_shift', retryAfterMs: MIN_SHIFT_MS - since }
+  }
+  return null
+}
 
 app.post('/api/punches', async (req, res) => {
   const { workerId, name, photo, distance, direction: requestedDirection, localTime } = req.body || {}
@@ -167,16 +187,22 @@ app.post('/api/punches', async (req, res) => {
     ? requestedDirection
     : (prevState === 'in' ? 'out' : 'in')
 
-  // Debounce only repeated same-direction punches within the cooldown window.
-  if (worker && worker.lastPunchTs && worker.currentState === direction
-      && (ts - worker.lastPunchTs) < PUNCH_COOLDOWN_MS) {
+  const cd = cooldownReason(worker, ts, direction)
+  if (cd) {
     return res.status(429).json({
       error: 'cooldown',
+      reason: cd.kind,
       lastPunchTs: worker.lastPunchTs,
       lastDirection: worker.currentState,
-      retryAfterMs: PUNCH_COOLDOWN_MS - (ts - worker.lastPunchTs)
+      retryAfterMs: cd.retryAfterMs,
+      worker: { id: worker.id, name: worker.name }
     })
   }
+
+  // Hours worked: only meaningful on a check-OUT after a prior check-IN.
+  const hoursWorked = (direction === 'out' && prevState === 'in' && worker?.lastPunchTs)
+    ? (ts - worker.lastPunchTs) / 3_600_000
+    : null
 
   const dayFolder = path.join(PUNCHES_DIR, dateFolder(ts))
   fs.mkdirSync(dayFolder, { recursive: true })
@@ -188,6 +214,7 @@ app.post('/api/punches', async (req, res) => {
     id: uid(),
     workerId: workerId || null,
     employeeId: worker?.employeeId || null,
+    kind: worker?.kind || 'worker',
     name: name || 'Unknown',
     direction,
     ts,
@@ -195,6 +222,7 @@ app.post('/api/punches', async (req, res) => {
     photo: rel,
     photoAbs: path.join(dayFolder, filename),  // for the sync worker
     distance: typeof distance === 'number' ? distance : null,
+    hoursWorked,
     sizeBytes: buf.length
   }
   db.punches.push(punch)
@@ -268,17 +296,21 @@ app.post('/api/recognize-and-punch', async (req, res) => {
       ? requestedDirection
       : (prevState === 'in' ? 'out' : 'in')
 
-    // Debounce only repeated same-direction punches; opposite direction is allowed immediately.
-    if (worker.lastPunchTs && worker.currentState === direction
-        && (ts - worker.lastPunchTs) < PUNCH_COOLDOWN_MS) {
+    const cd = cooldownReason(worker, ts, direction)
+    if (cd) {
       return res.status(429).json({
         error: 'cooldown',
+        reason: cd.kind,
         lastPunchTs: worker.lastPunchTs,
         lastDirection: worker.currentState,
-        retryAfterMs: PUNCH_COOLDOWN_MS - (ts - worker.lastPunchTs),
+        retryAfterMs: cd.retryAfterMs,
         worker: { id: worker.id, name: worker.name }
       })
     }
+
+    const hoursWorked = (direction === 'out' && prevState === 'in' && worker.lastPunchTs)
+      ? (ts - worker.lastPunchTs) / 3_600_000
+      : null
 
     // Save the punch photo locally.
     const dayFolder = path.join(PUNCHES_DIR, dateFolder(ts))
@@ -291,6 +323,7 @@ app.post('/api/recognize-and-punch', async (req, res) => {
       id: uid(),
       workerId: worker.id,
       employeeId: worker.employeeId || null,
+      kind: worker.kind || 'worker',
       name: worker.name || 'Unknown',
       direction,
       ts,
@@ -298,6 +331,7 @@ app.post('/api/recognize-and-punch', async (req, res) => {
       photo: rel,
       photoAbs: path.join(dayFolder, filename),
       distance: match.distance,
+      hoursWorked,
       sizeBytes: buf.length
     }
 
@@ -319,6 +353,8 @@ app.post('/api/recognize-and-punch', async (req, res) => {
       ok: true,
       worker: { id: worker.id, name: worker.name, employeeId: worker.employeeId, thumb: worker.thumb || '' },
       direction,
+      hoursWorked,
+      minShiftMs: MIN_SHIFT_MS,
       distance: match.distance,
       tookMs: Date.now() - t0
     })

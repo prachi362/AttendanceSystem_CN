@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Camera, UserPlus, LayoutDashboard, Users, Clock as ClockIcon } from 'lucide-react'
+import { Camera, UserPlus, LayoutDashboard } from 'lucide-react'
 import LangToggle from '../components/LangToggle.jsx'
-import { api } from '../utils/api.js'
 
 const DASHBOARD_PIN = '2651'
 
 export default function HomeScreen({ t, lang, setLang, onPunch, onRegister, onDashboard }) {
-  const [stats, setStats] = useState({ workers: 0, punches: 0 })
   const [now, setNow] = useState(new Date())
   const [pinOpen, setPinOpen] = useState(false)
   const [pin, setPin] = useState('')
@@ -22,12 +20,8 @@ export default function HomeScreen({ t, lang, setLang, onPunch, onRegister, onDa
   }
 
   useEffect(() => {
-    let cancelled = false
-    const load = () => api.stats().then(s => { if (!cancelled) setStats(s) }).catch(() => {})
-    load()
-    const statId = setInterval(load, 10000)
     const tickId = setInterval(() => setNow(new Date()), 1000)
-    return () => { cancelled = true; clearInterval(statId); clearInterval(tickId) }
+    return () => clearInterval(tickId)
   }, [])
 
   const locale = lang === 'es' ? 'es-ES' : 'en-US'
@@ -65,12 +59,6 @@ export default function HomeScreen({ t, lang, setLang, onPunch, onRegister, onDa
 
       <div className="flex-1" />
 
-      {/* Two compact stats */}
-      <div className="grid grid-cols-2 gap-3">
-        <StatTile icon={Users}     label={t.totalWorkers} value={stats.workers || 0} />
-        <StatTile icon={ClockIcon} label={t.punches}      value={stats.punches || 0} />
-      </div>
-
       {pinOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-6"
              onClick={() => { setPinOpen(false); setPin(''); setPinError(false) }}>
@@ -96,20 +84,6 @@ export default function HomeScreen({ t, lang, setLang, onPunch, onRegister, onDa
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function StatTile({ icon: Icon, label, value }) {
-  return (
-    <div className="card px-4 py-3 flex items-center gap-3">
-      <div className="w-9 h-9 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center">
-        <Icon size={18} strokeWidth={2.2} />
-      </div>
-      <div className="leading-tight">
-        <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
-        <div className="text-2xl text-slate-900 tabular-nums" style={{ fontWeight: 600 }}>{value}</div>
-      </div>
     </div>
   )
 }

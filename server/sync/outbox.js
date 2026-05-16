@@ -123,7 +123,11 @@ async function processItem(item) {
   }
 
   // 2. Always append a row to the sheet, even if photo upload was skipped/failed.
-  //   Columns: Timestamp | Name | Employee ID | Direction | Photo | Worker ID | Match Distance
+  //   Columns: Timestamp | Name | Employee ID | Direction | Photo | Worker ID |
+  //            Match Distance | Kind | Hours Worked
+  const hoursStr = (typeof p.hoursWorked === 'number' && Number.isFinite(p.hoursWorked))
+    ? p.hoursWorked.toFixed(2)
+    : ''
   const row = [
     p.localTime || new Date(p.ts).toISOString(),
     p.name || '',
@@ -131,7 +135,9 @@ async function processItem(item) {
     (p.direction || '').toUpperCase(),
     photoUrl ? `=HYPERLINK("${photoUrl}","photo")` : '',
     p.workerId || '',
-    typeof p.distance === 'number' ? Number(p.distance.toFixed(4)) : ''
+    typeof p.distance === 'number' ? Number(p.distance.toFixed(4)) : '',
+    p.kind === 'employee' ? 'Employee' : 'Worker',
+    hoursStr
   ]
   await appendRow(row)
 }

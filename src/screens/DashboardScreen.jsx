@@ -17,9 +17,10 @@ export default function DashboardScreen({ t, onBack }) {
   }
   useEffect(() => { load() }, [])
 
-  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
-  const todayList = punches.filter(p => p.ts >= startOfDay.getTime())
-  const filtered = todayList.filter(p => !q.trim() || p.name?.toLowerCase().includes(q.toLowerCase()))
+  // Show ALL punches (today + previous days), grouped by date so the dashboard
+  // doubles as a history view.
+  const filtered = punches.filter(p => !q.trim() || p.name?.toLowerCase().includes(q.toLowerCase()))
+  const groups = groupByDay(filtered)
 
   return (
     <div className="flex-1 flex flex-col p-6 gap-4 fade-in min-h-0">
@@ -50,27 +51,40 @@ export default function DashboardScreen({ t, onBack }) {
       </div>
 
       <div className="card overflow-hidden flex-1 min-h-0 flex flex-col">
-        <div className="grid grid-cols-[56px_1fr_60px_90px] gap-3 px-4 py-3 text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-100" style={{ fontWeight: 600 }}>
+        <div className="grid grid-cols-[56px_1fr_60px_70px_90px] gap-3 px-4 py-3 text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-100" style={{ fontWeight: 600 }}>
           <div>{t.photo}</div>
           <div>{t.name}</div>
           <div>{t.direction}</div>
+          <div className="text-right">Hrs</div>
           <div className="text-right">{t.time}</div>
         </div>
 
-        <div className="flex-1 overflow-y-auto no-scrollbar divide-y divide-slate-100">
+        <div className="flex-1 overflow-y-auto no-scrollbar">
           {filtered.length === 0 ? (
             <div className="p-10 text-center text-slate-400">{loading ? '…' : t.noData}</div>
-          ) : filtered.map(p => (
-            <div key={p.id} className="grid grid-cols-[56px_1fr_60px_90px] gap-3 px-4 py-2.5 items-center hover:bg-slate-50">
-              {p.photo ? (
-                <img src={'/' + p.photo} alt="" className="w-12 h-12 rounded-xl object-cover bg-slate-100" />
-              ) : <div className="w-12 h-12 rounded-xl bg-slate-100" />}
-              <div className="min-w-0">
-                <div className="text-slate-900 truncate" style={{ fontWeight: 600 }}>{p.name}</div>
+          ) : groups.map(g => (
+            <div key={g.key}>
+              <div className="sticky top-0 z-10 px-4 py-2 text-[11px] uppercase tracking-wider text-slate-500 bg-[rgba(15,31,56,0.92)] border-b border-slate-100" style={{ fontWeight: 600 }}>
+                {g.label}
               </div>
-              <DirBadge dir={p.direction || 'in'} t={t} />
-              <div className="text-right text-sm text-slate-700 tabular-nums">
-                {new Date(p.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              <div className="divide-y divide-slate-100">
+                {g.items.map(p => (
+                  <div key={p.id} className="grid grid-cols-[56px_1fr_60px_70px_90px] gap-3 px-4 py-2.5 items-center hover:bg-slate-50">
+                    {p.photo ? (
+                      <img src={'/' + p.photo} alt="" className="w-12 h-12 rounded-xl object-cover bg-slate-100" />
+                    ) : <div className="w-12 h-12 rounded-xl bg-slate-100" />}
+                    <div className="min-w-0">
+                      <div className="text-slate-900 truncate" style={{ fontWeight: 600 }}>{p.name}</div>
+                    </div>
+                    <DirBadge dir={p.direction || 'in'} t={t} />
+                    <div className="text-right text-sm text-slate-700 tabular-nums">
+                      {typeof p.hoursWorked === 'number' ? p.hoursWorked.toFixed(2) : '—'}
+                    </div>
+                    <div className="text-right text-sm text-slate-700 tabular-nums">
+                      {new Date(p.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
@@ -78,6 +92,29 @@ export default function DashboardScreen({ t, onBack }) {
       </div>
     </div>
   )
+}
+
+// Group punches into per-day buckets, newest day first, with a human-readable label.
+function groupByDay(items) {
+  const buckets = new Map()
+  for (const p of items) {
+    const d = new Date(p.ts)
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(p)
+  }
+  const today = new Date(); today.setHours(0,0,0,0)
+  const yesterday = new Date(today.getTime() - 86400000)
+  function label(key) {
+    const [y, m, d] = key.split('-').map(Number)
+    const date = new Date(y, m - 1, d)
+    if (date.getTime() === today.getTime()) return 'Today'
+    if (date.getTime() === yesterday.getTime()) return 'Yesterday'
+    return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+  }
+  return Array.from(buckets.entries())
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([key, items]) => ({ key, label: label(key), items }))
 }
 
 function BigStat({ label, value, accent }) {

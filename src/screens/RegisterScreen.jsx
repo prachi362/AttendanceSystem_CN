@@ -15,7 +15,7 @@ export default function RegisterScreen({ t, onDone, onBack, onPunched }) {
   // info | glasses | capture | saving | done | duplicate
   const [stage, setStage] = useState('info')
   const [name, setName] = useState('')
-  const [empId, setEmpId] = useState('')
+  const [kind, setKind] = useState('worker') // 'worker' | 'employee'
   const [stepIdx, setStepIdx] = useState(0)
   const [photos, setPhotos] = useState({})
   const [camReady, setCamReady] = useState(false)
@@ -61,7 +61,7 @@ export default function RegisterScreen({ t, onDone, onBack, onPunched }) {
       try {
         const r = await api.createWorker({
           name: name.trim(),
-          employeeId: empId.trim() || null,
+          kind,
           photos: next,
           descriptor: descriptorsRef.current[0] || null,
           descriptors: descriptorsRef.current
@@ -84,7 +84,7 @@ export default function RegisterScreen({ t, onDone, onBack, onPunched }) {
         <Header onBack={onBack} title={t.register} />
         <ProgressDots total={STEPS.length + 1} current={0} />
 
-        <div className="flex-1 flex flex-col justify-center gap-5">
+        <div className="flex-1 flex flex-col justify-center gap-6">
           <Field label={t.fullName}>
             <input
               autoFocus
@@ -93,12 +93,15 @@ export default function RegisterScreen({ t, onDone, onBack, onPunched }) {
               className="input"
             />
           </Field>
-          <Field label={t.employeeId}>
-            <input
-              value={empId}
-              onChange={e => setEmpId(e.target.value)}
-              className="input"
-            />
+          <Field label={t.personType}>
+            <div className="grid grid-cols-2 gap-3">
+              <KindButton active={kind === 'worker'} onClick={() => setKind('worker')}>
+                {t.workerKind}
+              </KindButton>
+              <KindButton active={kind === 'employee'} onClick={() => setKind('employee')}>
+                {t.employeeKind}
+              </KindButton>
+            </div>
           </Field>
         </div>
 
@@ -182,6 +185,21 @@ function ProgressDots({ total, current }) {
         <div key={i} className={`h-1.5 rounded-full transition-all ${i <= current ? 'bg-brand-600 w-8' : 'bg-slate-200 w-4'}`} style={{ transitionDuration: '200ms' }} />
       ))}
     </div>
+  )
+}
+
+function KindButton({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`py-5 px-4 rounded-2xl text-xl transition-all active:scale-[0.97] ${
+        active
+          ? 'bg-gradient-to-br from-[#1ba6d6] to-[#0a78a0] text-white shadow-[0_10px_24px_-8px_rgba(15,149,196,0.55)] ring-2 ring-[#5cc8f0]'
+          : 'border border-[rgba(92,200,240,0.25)] text-slate-200 bg-white/5 hover:bg-white/10'
+      }`}
+      style={{ fontWeight: 600 }}
+    >{children}</button>
   )
 }
 
