@@ -30,17 +30,41 @@ const jwt = new JWT({
 })
 
 const tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1'
-const rows = await readSheet(tab)
 
-if (rows.length > 1) {
-  const range = `${tab}!A2:Z${rows.length}`
+// 1. Look up the numeric sheetId for `tab` (needed by batchUpdate).
+const meta = await jwt.request({
+  url: `https://sheets.googleapis.com/v4/spreadsheets/${process.env.GOOGLE_SHEET_ID}?fields=sheets(properties(sheetId,title,gridProperties))`,
+  method: 'GET'
+})
+const sheet = meta.data.sheets.find(s => s.properties.title === tab)
+if (!sheet) throw new Error(`Tab ${tab} not found`)
+const sheetId = sheet.properties.sheetId
+const rowCount = sheet.properties.gridProperties.rowCount
+
+// 2. DELETE all data rows (rows 2..end) instead of just clearing values.
+//    `clear` leaves empty rows behind, which Google Sheets' INSERT_ROWS append
+//    treats as the end of the table — so new rows land below them. Actually
+//    removing the rows ensures new appends start at row 2.
+if (rowCount > 1) {
   await jwt.request({
-    url: `https://sheets.googleapis.com/v4/spreadsheets/${process.env.GOOGLE_SHEET_ID}/values/${encodeURIComponent(range)}:clear`,
-    method: 'POST'
+    url: `https://sheets.googleapis.com/v4/spreadsheets/${process.env.GOOGLE_SHEET_ID}:batchUpdate`,
+    method: 'POST',
+    data: {
+      requests: [{
+        deleteDimension: {
+          range: {
+            sheetId,
+            dimension: 'ROWS',
+            startIndex: 1,        // 0-based, so this skips the header row
+            endIndex: rowCount    // delete through the last existing row
+          }
+        }
+      }]
+    }
   })
-  console.log(`Cleared ${rows.length - 1} punch row(s) from ${tab}.`)
+  console.log(`Deleted ${rowCount - 1} row(s) from ${tab} (header kept).`)
 } else {
-  console.log(`${tab} is already empty.`)
+  console.log(`${tab} only has a header row — nothing to delete.`)
 }
 
 // Reset every registered worker back to 'out'.
