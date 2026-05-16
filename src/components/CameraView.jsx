@@ -12,13 +12,14 @@ const CameraView = forwardRef(function CameraView({ onError, onReady, overlay, a
     let stream
     async function start() {
       try {
-        // Portrait 720x1280 to keep CPU/GPU load down on the kiosk device.
-        // The browser will pick the closest supported native resolution.
+        // Ask for a wide native frame (most webcams are landscape sensors).
+        // Combined with `object-contain` below, this avoids the cropped /
+        // "zoomed in" look when someone stands close to the kiosk.
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width:  { ideal: 720 },
-            height: { ideal: 1280 },
+            width:  { ideal: 1280 },
+            height: { ideal: 720 },
             frameRate: { ideal: 24, max: 30 }
           },
           audio: false
@@ -49,7 +50,7 @@ const CameraView = forwardRef(function CameraView({ onError, onReady, overlay, a
         ref={videoRef}
         playsInline
         muted
-        className="absolute inset-0 w-full h-full object-cover"
+        className="absolute inset-0 w-full h-full object-contain"
         style={{ transform: 'scaleX(-1)' }}
       />
 
