@@ -230,6 +230,26 @@ function findLocalPhoto(index, workerId, ts) {
   return best.rel
 }
 
+// Read Sheet1 (the punch log) and return the most recent punch for a given
+// worker id. Used by the punch flow to derive the true current state without
+// depending on the worker registry's `currentState` cell — that cell can
+// become stale if a previous deploy killed an in-flight updateWorkerState.
+// Returns { direction, ts } or null.
+async function lastPunchFromSheet(workerId) {
+  if (!workerId || !syncEnabled()) return null
+  const tab = process.env.GOOGLE_SHEET_TAB || 'Sheet1'
+  const rows = await readSheet(tab, 'formatted')
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const r = rows[i]
+    if (!r || !r[0]) continue
+    if (r[5] !== workerId) continue
+    const ts = parseSheetTimestamp(r[0])
+    const direction = String(r[3] || '').toLowerCase() === 'out' ? 'out' : 'in'
+    return { direction, ts: Number.isFinite(ts) ? ts : null }
+  }
+  return null
+}
+
 // Parse Sheet1 into the punch shape the dashboard expects.
 // Sheet columns: A=ts | B=name | C=empId | D=dir | E=photo(HYPERLINK) | F=workerId | G=distance | H=kind | I=hours
 //
@@ -433,12 +453,30 @@ app.post('/api/recognize-and-punch', async (req, res) => {
     const db = readDB()
     const worker = db.workers.find(w => w.id === match.worker.id) || match.worker
 
-    const prevState = worker.currentState || 'out'
+    // Derive the worker's true current state from Sheet1 (the punch log) so we
+    // can't be tricked by a stale `currentState` cell on the Workers/Employees
+    // tab — those can lag behind if a previous deploy killed an in-flight
+    // updateWorkerState call.
+    let prevState = worker.currentState || 'out'
+    let prevPunchTs = worker.lastPunchTs || null
+    try {
+      const last = await lastPunchFromSheet(worker.id)
+      if (last) {
+        prevState = last.direction
+        prevPunchTs = last.ts
+      }
+    } catch (e) {
+      console.warn('[recognize-and-punch] could not read last punch from sheet, using cached state:', e.message)
+    }
+
     const direction = (requestedDirection === 'in' || requestedDirection === 'out')
       ? requestedDirection
       : (prevState === 'in' ? 'out' : 'in')
 
-    const cd = cooldownReason(worker, ts, direction)
+    // Build a stub worker reflecting the just-derived state, so cooldown checks
+    // are based on Sheet1 truth rather than the cache.
+    const stateWorker = { ...worker, currentState: prevState, lastPunchTs: prevPunchTs }
+    const cd = cooldownReason(stateWorker, ts, direction)
     if (cd) {
       return res.status(429).json({
         error: 'cooldown',
@@ -450,8 +488,8 @@ app.post('/api/recognize-and-punch', async (req, res) => {
       })
     }
 
-    const hoursWorked = (direction === 'out' && prevState === 'in' && worker.lastPunchTs)
-      ? (ts - worker.lastPunchTs) / 3_600_000
+    const hoursWorked = (direction === 'out' && prevState === 'in' && prevPunchTs)
+      ? (ts - prevPunchTs) / 3_600_000
       : null
 
     // Save the punch photo locally.
