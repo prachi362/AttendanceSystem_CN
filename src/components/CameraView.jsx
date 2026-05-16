@@ -12,14 +12,14 @@ const CameraView = forwardRef(function CameraView({ onError, onReady, overlay, a
     let stream
     async function start() {
       try {
-        // Ask for a wide native frame (most webcams are landscape sensors).
-        // Combined with `object-contain` below, this avoids the cropped /
-        // "zoomed in" look when someone stands close to the kiosk.
+        // Portrait 720x1280 — matches the registration captures so the face
+        // descriptors line up. The CSS `object-contain` below is what
+        // actually fixes the "too zoomed" look (no cropping at the edges).
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width:  { ideal: 1280 },
-            height: { ideal: 720 },
+            width:  { ideal: 720 },
+            height: { ideal: 1280 },
             frameRate: { ideal: 24, max: 30 }
           },
           audio: false
