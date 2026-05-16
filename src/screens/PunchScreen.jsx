@@ -269,11 +269,18 @@ function CooldownScreen({ t, worker, info }) {
 
       {isMinShift ? (
         <>
-          <div className="flex items-center gap-3 bg-amber-50 text-amber-700 px-5 py-3 rounded-2xl">
-            <Clock size={26} strokeWidth={2.2} />
-            <span className="text-3xl tabular-nums" style={{ fontWeight: 600 }}>{clock}</span>
+          {/* Primary message: clearly tell the user they're already in for the day. */}
+          <p className="text-xl text-slate-800 text-center max-w-sm" style={{ fontWeight: 600 }}>
+            {t.alreadyPunchedIn}
+          </p>
+          {/* Secondary line + live countdown clock showing when they can check out. */}
+          <div className="flex flex-col items-center gap-2">
+            <p className="text-slate-500 text-sm">{t.minShiftBlocked}</p>
+            <div className="flex items-center gap-3 bg-amber-50 text-amber-700 px-5 py-3 rounded-2xl">
+              <Clock size={26} strokeWidth={2.2} />
+              <span className="text-3xl tabular-nums" style={{ fontWeight: 600 }}>{clock}</span>
+            </div>
           </div>
-          <p className="text-slate-500 text-center max-w-sm">{t.minShiftBlocked}</p>
         </>
       ) : (
         <p className="text-slate-500 text-center max-w-sm">{t.cooldown}</p>
