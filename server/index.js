@@ -477,16 +477,22 @@ app.post('/api/recognize-and-punch', async (req, res) => {
       sizeBytes: buf.length
     }
 
-    // Update local cache.
+    // Update state in BOTH the local db (if mirrored) AND the cached worker
+    // object that the workers-store handed us. Mutating `match.worker` is
+    // important: it lives inside the store's in-memory cache (30s TTL), so
+    // any punch arriving within that window sees the up-to-date state and
+    // the IN/OUT direction is auto-decided correctly.
     const localWorker = db.workers.find(w => w.id === worker.id)
     if (localWorker) {
       localWorker.currentState = direction
       localWorker.lastPunchTs = ts
     }
+    match.worker.currentState = direction
+    match.worker.lastPunchTs = ts
     db.punches.push(punch)
     writeDB(db)
 
-    // Background syncs.
+    // Background sync to Google Sheets (authoritative store).
     updateWorkerState(worker.id, direction, ts).catch(e =>
       console.warn('[store] updateWorkerState bg failed:', e.message))
     try { enqueuePunch(punch) } catch (e) { console.warn('[sync] enqueue failed:', e.message) }
